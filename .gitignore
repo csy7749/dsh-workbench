@@ -8,3 +8,5 @@ node_modules/
 
 # 临时文件与手工导出的 sqlite 备份：保留但不要进仓库
 .tmp-*
+
+.dsh-workbench/
