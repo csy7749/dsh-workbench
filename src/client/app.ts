@@ -2411,7 +2411,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
           <button class="btn" data-act="news-run" data-id="${topic.id}" title="${taskCount > 0 ? '立即让 Agent 检索一次' : '立即直连采集一次'}" ${running ? 'disabled' : ''}>${ic('play', 12)}${running ? '检索中…' : '检索'}</button>
           <button class="btn" data-act="news-toggle" data-id="${topic.id}" title="${topic.enabled ? '暂停' : '恢复'}">${topic.enabled ? ic('pause', 12) : ic('play', 12)}${topic.enabled ? '暂停' : '恢复'}</button>
           <button class="icon-btn" data-act="news-edit" data-id="${topic.id}" title="编辑">${ic('edit', 14)}</button>
-          <button class="icon-btn" data-act="news-delete" data-id="${topic.id}" title="删除">${ic('trash', 14)}</button>
+          <button class="icon-btn" data-act="news-clear" data-id="${topic.id}" title="清空这个订阅下的全部条目（订阅本身保留）">${ic('x', 14)}</button>
+          <button class="icon-btn" data-act="news-delete" data-id="${topic.id}" title="删除订阅及其全部条目">${ic('trash', 14)}</button>
         </div>
       </div>`
     }).join('')}</div>`
@@ -2475,7 +2476,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
           ? `<div class="ni-title-src" title="原文标题（机器翻译可能有误，以此为准）">${esc(item.title)}</div>`
           : (zhTitle === '' && needsTranslation(item) ? `<button class="ni-tr" data-act="news-translate-one" data-id="${item.id}" title="翻译这一条">${ic('spark', 11)}翻译</button>` : '')}
         ${text ? `<div class="ni-ai${ai ? '' : ' plain'}"><div class="ni-ai-head">${ic('spark', 11)} ${ai ? 'AI 总结' : (zhSummary ? '摘要 · 机器翻译' : '摘要')}</div><p>${esc(text)}</p>${zhSummary && item.summary && zhSummary !== item.summary ? `<p class="ni-ai-src" title="原文摘要（机器翻译可能有误，以此为准）">${esc(item.summary)}</p>` : ''}</div>` : ''}
-        <div class="ni-foot">${item.source ? `<span>${esc(item.source)}</span>` : ''}${item.publishedAt ? `<span>${esc(item.publishedAt)}</span>` : ''}${heatText(item) ? `<span class="ni-heat" title="热度：${item.heatKind === 'points' ? 'Hacker News 分数' : 'GitHub 日增星数'}">${heatText(item)}</span>` : ''}<a href="${esc(item.url)}" target="_blank" rel="noreferrer noopener">查看原文</a></div>
+        <div class="ni-foot">${item.source ? `<span>${esc(item.source)}</span>` : ''}${item.publishedAt ? `<span>${esc(item.publishedAt)}</span>` : ''}${heatText(item) ? `<span class="ni-heat" title="热度：${item.heatKind === 'points' ? 'Hacker News 分数' : 'GitHub 日增星数'}">${heatText(item)}</span>` : ''}<a href="${esc(item.url)}" target="_blank" rel="noreferrer noopener">查看原文</a><button class="ni-del" data-act="news-item-delete" data-id="${item.id}" title="删除这条新闻">${ic('x', 12)}</button></div>
         ${also.length > 0 ? `<div class="ni-also">${also.map(i => `也见于 ${esc(i.source || NEWS_ITEM_SOURCE_LABEL[i.sourceKey ?? ''] || '其它源')}${heatText(i) ? ` ${heatText(i)}` : ''}`).join(' · ')}</div>` : ''}
       </article>`
     }
@@ -2679,6 +2680,56 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       toast('订阅已删除')
     } catch (cause) {
       toast(`删除失败：${String((cause as Error).message ?? cause)}`)
+    }
+  }
+
+  /**
+   * 删单条：只摘掉这一张卡，不动订阅。404 说明这条已经被删过了（比如另一个页面），
+   * 这时不报错、按成功处理并刷新，否则用户会看到一条「删除失败」但其实已经没了。
+   */
+  async function deleteNewsItem(id: string): Promise<void> {
+    const item = newsItems.find(i => i.id === id)
+    if (!item) return
+    const label = (item.titleZh || item.title || '').trim()
+    const brief = label.length > 42 ? `${label.slice(0, 42)}…` : label
+    const ok = typeof window.confirm === 'function' ? window.confirm(`删除这条新闻？\n\n${brief}`) : true
+    if (!ok) return
+    try {
+      const res = await fetch(`${API}/news/items/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      if (res.status === 404) {
+        await loadNews()
+        toast('这条已经不在库里了')
+        return
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      await loadNews()
+      toast('已删除 1 条')
+    } catch (cause) {
+      toast(`删除失败：${String((cause as Error).message ?? cause)}`)
+    }
+  }
+
+  /** 清空某订阅的条目，订阅本身保留。危险操作，必须二次确认并带 confirm:true。 */
+  async function clearNewsTopic(id: string): Promise<void> {
+    const topic = newsTopics.find(t => t.id === id)
+    if (!topic) return
+    const count = newsItems.filter(i => i.topicId === id).length
+    const ok = typeof window.confirm === 'function'
+      ? window.confirm(`清空订阅「${topic.title}」下的 ${count} 条新闻？订阅本身会保留。`)
+      : true
+    if (!ok) return
+    try {
+      const res = await fetch(`${API}/news/items/clear`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ topicId: id, confirm: true }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json() as { removed?: number }
+      await loadNews()
+      toast(`已清空 ${Number(data?.removed ?? 0)} 条`)
+    } catch (cause) {
+      toast(`清空失败：${String((cause as Error).message ?? cause)}`)
     }
   }
 
@@ -8730,6 +8781,8 @@ ${lines}`
       if (act === 'news-run') { void runNewsTopic(id); return }
       if (act === 'news-toggle') { void toggleNewsTopic(id); return }
       if (act === 'news-delete') { void deleteNewsTopic(id); return }
+      if (act === 'news-clear') { void clearNewsTopic(id); return }
+      if (act === 'news-item-delete') { void deleteNewsItem(id); return }
       if (act === 'news-refresh') { void loadNews(); return }
       if (act === 'news-translate-one') { void translateNewsItems([id]); return }
       if (act === 'news-translate-all') { void translateNewsItems([]); return }

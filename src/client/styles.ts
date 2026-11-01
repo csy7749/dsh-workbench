@@ -544,6 +544,10 @@ h1.page-title{font-size:29px;line-height:1.18;margin:0;font-weight:700;letter-sp
 .ni-heat{color:var(--text-2);font-variant-numeric:tabular-nums}
 /* 同一事件的其它来源（官方源主卡 + HN 讨论），一行小字，不占新卡 */
 .ni-also{margin-top:5px;font-size:10px;color:var(--text-3)}
+/* 删单条：危险操作，默认极淡，卡片悬停时才明显，不抢「查看原文」的注意力 */
+.ni-del{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:none;background:transparent;border-radius:4px;color:var(--text-3);opacity:.4;cursor:pointer;transition:color .15s,opacity .15s}
+.news-item:hover .ni-del{opacity:.9}
+.ni-del:hover{color:var(--red);opacity:1}
 .news-feed-head b{font-size:13.5px}
 @media (max-width:1250px){.news-list{columns:2}}
 @media (max-width:950px){.news-list{columns:1}}

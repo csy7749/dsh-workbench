@@ -148,7 +148,9 @@ function brandRegExp(): RegExp {
 
 const BRAND_RE = brandRegExp()
 
-function protectBrands(text: string): { text: string; tokens: BrandToken[] } {
+/* 导出给离线验证脚本（scripts/verify-news-translate.mjs）：这两步是纯函数，
+   单独测比端到端打 MT 更快也更稳定。 */
+export function protectBrands(text: string): { text: string; tokens: BrandToken[] } {
   const tokens: BrandToken[] = []
   const out = text.replace(BRAND_RE, (matched) => {
     tokens.push({ token: `${SLOT_OPEN}${tokens.length + 1}${SLOT_CLOSE}`, original: matched })
@@ -158,7 +160,7 @@ function protectBrands(text: string): { text: string; tokens: BrandToken[] } {
 }
 
 /** 换回品牌词；有任何一个占位符没保住就返回 null（调用方据此换提供方）。 */
-function restoreBrands(text: string, tokens: BrandToken[]): string | null {
+export function restoreBrands(text: string, tokens: BrandToken[]): string | null {
   let out = text
   for (const { token, original } of tokens) {
     if (!out.includes(token)) return null

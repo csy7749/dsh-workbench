@@ -21,6 +21,11 @@ import { createIdeaModule, buildIdeaPrompt } from './idea.js'
 import { createAgentModule } from './agent.js'
 import { collectFromSources, NEWS_SOURCES } from './news-sources.js'
 import { translateNewsItems } from './translate.js'
+/* 翻译的纯函数对外导出：离线验证脚本（scripts/verify-news-translate.mjs）引用构建产物，
+   测的就是真正上线的逻辑，不用复制一份镜像实现。 */
+export { protectBrands, restoreBrands } from './translate.js'
+/* 标题截断同理：给离线断言用，避免「按词边界截断」这类细节只能靠肉眼。 */
+export { clipText } from './news-sources.js'
 import { syncDelta, syncMeta, syncPush, writeTombstone, type SyncHooks } from './sync.js'
 import {
   clampText as clampGraphText, normalizeProductGraph, parseExternalRef, productGraphBytes,
@@ -1014,6 +1019,21 @@ class SqliteStore {
       try { this.db.exec('ROLLBACK') } catch { /* ignore */ }
       throw cause
     }
+  }
+
+  /**
+   * 删单条新闻。返回是否真的删掉了一条 —— 端点据此回 404，
+   * 不允许「删不存在的 id 也回 200」，否则前端误以为删成功、刷新后条目还在。
+   */
+  deleteNewsItem(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM news_items WHERE id = ?').run(str(id))
+    return Number(result?.changes ?? 0) > 0
+  }
+
+  /** 清空某订阅的全部条目（保留订阅本身）。返回删掉的条数，给前端报「清空 N 条」。 */
+  clearNewsItems(topicId: string): number {
+    const result = this.db.prepare('DELETE FROM news_items WHERE topic_id = ?').run(str(topicId))
+    return Number(result?.changes ?? 0)
   }
 
   /**
@@ -4008,6 +4028,24 @@ class JsonStore {
     this.persistNews()
   }
 
+  /** 删单条（JSON 降级版，语义与 SQLite 版一致：删不到返回 false）。 */
+  deleteNewsItem(id: string): boolean {
+    const before = this.newsItems.length
+    this.newsItems = this.newsItems.filter(i => i.id !== str(id))
+    const removed = this.newsItems.length !== before
+    if (removed) this.persistNews()
+    return removed
+  }
+
+  /** 清空某订阅的全部条目（保留订阅本身）。返回删掉的条数。 */
+  clearNewsItems(topicId: string): number {
+    const before = this.newsItems.length
+    this.newsItems = this.newsItems.filter(i => i.topicId !== str(topicId))
+    const removed = before - this.newsItems.length
+    if (removed > 0) this.persistNews()
+    return removed
+  }
+
   /** 记下每源最近一次采集结果；与 SQLite 版同一契约。 */
   updateNewsSourceHealth(topicId: string, health: Record<string, any>): void {
     const target: any = this.newsTopics.find(t => t.id === topicId)
@@ -5014,7 +5052,7 @@ const NEWS_SOURCE_KEYS = ['official', 'github', 'community', 'media']
  * 旧 12 类（update/dlc/announcement/dev/community/data/review/peripheral/oss/tool/tutorial/paper）
  * 是「游戏资讯 + 雷达」两套混在一起，同一条内容常有两三个都说得通。现行 7 类只看内容形态。
  */
-const NEWS_KINDS = ['release', 'oss-launch', 'tutorial', 'deep-dive', 'paper', 'tool-update', 'other']
+export const NEWS_KINDS = ['release', 'oss-launch', 'tutorial', 'deep-dive', 'paper', 'tool-update', 'other']
 /**
  * 旧值 → 新值。**读旧数据、收模型输出**都要过这一层，保证库里不会同时存在两套口径。
  * 认不出的值一律 other：宁可归到兜底，也不让一条奇怪的值把整个列表的筛选打乱。
@@ -5028,7 +5066,7 @@ const NEWS_KIND_ALIASES: Record<string, string> = {
   'deep-dive': 'deep-dive', review: 'deep-dive',
   other: 'other', dlc: 'other', dev: 'other', community: 'other', data: 'other', peripheral: 'other',
 }
-function normalizeNewsKind(raw: unknown): string {
+export function normalizeNewsKind(raw: unknown): string {
   const key = str(raw).trim().toLowerCase()
   return NEWS_KIND_ALIASES[key] ?? 'other'
 }
@@ -5041,7 +5079,7 @@ function normalizeNewsKind(raw: unknown): string {
  * 2026-11-01 收紧：release 与 deep-dive 都**不**在常青清单里。
  * 版本发布是有时效的事件，三个月前的补丁说明就是过期信息；深度解析虽长文，但雷达看的是「最近在讨论什么」。
  */
-const NEWS_EVERGREEN_KINDS = ['oss-launch', 'tool-update', 'tutorial', 'paper']
+export const NEWS_EVERGREEN_KINDS = ['oss-launch', 'tool-update', 'tutorial', 'paper']
 /** 常规条目最大年龄（天）；常青类型放宽到 180 天。 */
 const NEWS_MAX_AGE_DAYS = 14
 const NEWS_MAX_AGE_DAYS_EVERGREEN = 180
@@ -5087,7 +5125,7 @@ const NEWS_TECH_TERMS: RegExp[] = [
   /\bai\b|\bllm\b|\bgpt\b|\bagent\b|diffusion|transformer|neural|机器学习|深度学习|推理|\brag\b|embedding|微调|fine-?tun|模型训练/i,
 ]
 /** 判定一条新闻是否与技术主题无关；返回 true 表示丢弃。 */
-function isOffTopicNews(input: { title: string; summary: string; aiSummary?: string; sourceKey: string }): boolean {
+export function isOffTopicNews(input: { title: string; summary: string; aiSummary?: string; sourceKey: string }): boolean {
   if (NEWS_TRUSTED_SOURCE_KEYS.includes(input.sourceKey)) return false
   const text = `${input.title}\n${input.summary}\n${input.aiSummary ?? ''}`
   if (NEWS_OFF_TOPIC_PATTERNS.some((re) => re.test(text))) return true
@@ -5116,7 +5154,7 @@ function parseNewsDate(text: string): number | null {
  */
 const NEWS_TRACKING_PARAMS = /^(utm_|fbclid$|gclid$|mc_cid$|mc_eid$|ref$|referrer$|source$|from$|spm$|share_)/i
 
-function normalizeNewsUrl(raw: string): string {
+export function normalizeNewsUrl(raw: string): string {
   let parsed: URL
   try { parsed = new URL(str(raw)) } catch { return str(raw).trim().toLowerCase() }
   return normalizeParsedUrl(parsed)
@@ -5137,7 +5175,7 @@ function normalizeParsedUrl(parsed: URL): string {
  * 事件键：同一规范化 URL 归一成同一个短串，用来把「官方博客 + HN 讨论」合并成一张卡。
  * 只用 URL 一个信号，所以两条必然指向同一个页面——这是合并唯一不会出错的情形。
  */
-function newsEventKey(raw: string): string {
+export function newsEventKey(raw: string): string {
   const normalized = normalizeNewsUrl(raw)
   if (normalized === '') return ''
   return `ev-${createHash('sha256').update(normalized).digest('hex').slice(0, 16)}`
@@ -5147,7 +5185,7 @@ function newsEventKey(raw: string): string {
  * 校验 + 归类 + 新鲜度闸门 + 相关性闸门。
  * 模型吐的内容一概不可信，这里做确定性兜底：URL 合法性、枚举白名单、时间过旧/未来、主题是否对题。
  */
-function cleanNewsItemsDetailed(value: unknown): { items: CleanNewsItem[]; dropped: { badUrl: number; stale: number; future: number; offTopic: number } } {
+export function cleanNewsItemsDetailed(value: unknown): { items: CleanNewsItem[]; dropped: { badUrl: number; stale: number; future: number; offTopic: number } } {
   const items: CleanNewsItem[] = []
   const dropped = { badUrl: 0, stale: 0, future: 0, offTopic: 0 }
   const now = Date.now()
@@ -6613,6 +6651,32 @@ export function apply(ctx: any): void {
           const id = decodeURIComponent(path.slice('/news/topics/'.length))
           await serialized(() => store.deleteNewsTopic(id))
           send(res, 200, { ok: true })
+          return
+        }
+        /* 删单条：条目级的删除入口（订阅级删除会把整张订阅连条目一起干掉）。
+           删不到就 404——静默 200 会让前端以为删成功了。 */
+        if (method === 'DELETE' && path.startsWith('/news/items/')) {
+          const id = decodeURIComponent(path.slice('/news/items/'.length))
+          if (id === '') { send(res, 400, { error: 'missing_item' }); return }
+          const removed = await serialized(() => store.deleteNewsItem(id))
+          if (!removed) { send(res, 404, { error: 'unknown_item', itemId: id }); return }
+          send(res, 200, { ok: true, removed: 1, itemId: id })
+          return
+        }
+        /* 清空某订阅的条目，保留订阅：危险操作，必须显式带 confirm:true。
+           返回值带 removed 条数，前端 toast 能说清「清空了几条」。 */
+        if (method === 'POST' && path === '/news/items/clear') {
+          const body = await readJson(req)
+          if (body?.confirm !== true) {
+            send(res, 400, { error: 'confirm_required', message: '清空条目属危险操作，请求体需带 confirm: true' })
+            return
+          }
+          const topicId = str(body?.topicId).trim()
+          if (topicId === '') { send(res, 400, { error: 'missing_topic' }); return }
+          const topic = store.listNews().topics.find((t: any) => t.id === topicId)
+          if (!topic) { send(res, 404, { error: 'unknown_topic', topicId }); return }
+          const removed = await serialized(() => store.clearNewsItems(topicId))
+          send(res, 200, { ok: true, removed, topicId })
           return
         }
         if (method === 'GET' && path === '/notes') {

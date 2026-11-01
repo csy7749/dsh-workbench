@@ -133,6 +133,25 @@ function plainText(raw: string, max = 600): string {
   return s.slice(0, max)
 }
 
+/**
+ * 按词边界截断并补省略号（2026-11-01 D3）。
+ *
+ * 原来 github-discover 用的是 `plainText(..., 120)`，本质就是 `slice(0, 120)`：
+ * 会把单词从中间劈开（`... image-gene`），也可能把 emoji 的代理对切成半个字符（显示成 �）。
+ * 这里先按**码点**切（`Array.from` 把代理对当一个元素，emoji 不会被撕开），
+ * 再尽量退到最近的空格；只有空格足够靠后（≥60%）才采纳，否则为了一个空格
+ * 砍掉近一半标题不值。余量固定留 1 个位置给省略号。
+ */
+export function clipText(text: string, max: number): string {
+  const raw = String(text ?? '')
+  const chars = Array.from(raw)
+  if (chars.length <= max) return raw
+  const cut = chars.slice(0, Math.max(1, max - 1))
+  const lastSpace = cut.lastIndexOf(' ')
+  const keep = lastSpace >= Math.floor(cut.length * 0.6) ? cut.slice(0, lastSpace) : cut
+  return `${keep.join('').trimEnd()}…`
+}
+
 /** 从任意日期字符串取 YYYY-MM-DD；失败返回空串（让上层的时间闸门放行）。 */
 function toDateOnly(text: string): string {
   const raw = String(text ?? '').trim()
@@ -470,13 +489,13 @@ async function collectGithubDiscovery(limit: number, params: Record<string, stri
         velocity,
         item: {
           // 标题给「仓库名 + 一句话简介」，只写 owner/repo 的话卡片上完全看不出是干什么的
-          title: plainText(desc === '' ? fullName : `${fullName} · ${desc}`, 120),
+          title: clipText(desc === '' ? fullName : `${fullName} · ${desc}`, 120),
           url: htmlUrl,
           source: `GitHub · ${queries[i].label}`,
           sourceKey: 'github',
           kind: queries[i].kind,
           publishedAt: new Date(created).toISOString().slice(0, 10),
-          summary: metrics.slice(0, 600),
+          summary: clipText(metrics, 600),
           /* 热度＝star 增速（stars/ageDays）：这才是「新鲜好用」的判据，绝对 star 数只会把老项目顶在前面 */
           heat: velocity,
           heatKind: 'star-velocity',
