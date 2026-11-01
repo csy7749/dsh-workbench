@@ -540,6 +540,10 @@ h1.page-title{font-size:29px;line-height:1.18;margin:0;font-weight:700;letter-sp
 .ni-foot{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:9px;padding-top:7px;border-top:1px solid var(--line);font-size:10px;color:var(--text-3)}
 .ni-foot a{margin-left:auto;color:var(--accent-ink);text-decoration:none;white-space:nowrap}
 .ni-foot a:hover{text-decoration:underline}
+/* 热度：各源原始量纲，只做小字，不新增卡片元素 */
+.ni-heat{color:var(--text-2);font-variant-numeric:tabular-nums}
+/* 同一事件的其它来源（官方源主卡 + HN 讨论），一行小字，不占新卡 */
+.ni-also{margin-top:5px;font-size:10px;color:var(--text-3)}
 .news-feed-head b{font-size:13.5px}
 @media (max-width:1250px){.news-list{columns:2}}
 @media (max-width:950px){.news-list{columns:1}}

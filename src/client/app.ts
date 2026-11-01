@@ -64,6 +64,12 @@ interface NewsItem {
   titleZh?: string
   /** 机翻中文摘要；空串=没翻 */
   summaryZh?: string
+  /** 热度原始值：HN 是分数，GitHub 发现流是日增星数。0/缺省=这源不给热度 */
+  heat?: number
+  /** 热度量纲：points / star-velocity。跨源量纲不同，**不做归一化**，前端按 kind 各自格式化 */
+  heatKind?: string
+  /** 同一事件的分组键（规范化 URL 派生）；空串=老数据，按独立条目处理 */
+  eventKey?: string
 }
 interface Notebook {
   id: string; name: string; workspacePath?: string; count?: number; createdAt: string; updatedAt: string
@@ -2279,7 +2285,9 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
         else toast('没有可翻译的条目')
       }
       else {
-        const via = data.report?.provider === 'youdao' ? '有道' : (data.report?.provider === 'youdao+mymemory' ? '有道 + MyMemory 兜底' : 'MyMemory')
+        const via = data.report?.provider === 'youdao' ? '有道'
+          : (data.report?.provider === 'youdao+mymemory' ? '有道 + MyMemory 兜底'
+            : (data.report?.provider === 'mymemory' ? 'MyMemory' : '缓存'))
         const failed = Number(data.report?.failed ?? 0)
         toast(`已翻译 ${done} 条（${via}）${failed > 0 ? `，${failed} 段未成功` : ''}`)
       }
@@ -2417,7 +2425,37 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       for (let i = 0; i < topicId.length; i += 1) h = (h * 31 + topicId.charCodeAt(i)) | 0
       return accents[Math.abs(h) % accents.length] ?? accents[0]
     }
-    const itemHtml = (item: NewsItem): string => {
+    /**
+     * 热度小字。两种量纲分别格式化，**不合并成一个数**：
+     * HN 的 128 分和 GitHub 的日增 3.4★ 没有可比性，混用会让人以为前者更热。
+     */
+    const heatText = (item: NewsItem): string => {
+      const heat = Number(item.heat ?? 0)
+      if (!(heat > 0)) return ''
+      if (item.heatKind === 'points') return `▲ ${Math.round(heat)}`
+      if (item.heatKind === 'star-velocity') return `日增 ${heat.toFixed(1)}★`
+      return ''
+    }
+    /**
+     * 按事件分组：同一个规范化 URL 被官方源和 HN 各收一条时，合并成一张卡。
+     * 主卡优先官方源（一手信息），其余源在卡底以小字附注。
+     * eventKey 为空的条目各自独立（用 id 当键），不会被误合并。
+     */
+    const groupByEvent = (list: NewsItem[]): Array<{ main: NewsItem; also: NewsItem[] }> => {
+      const order: string[] = []
+      const buckets = new Map<string, NewsItem[]>()
+      for (const item of list) {
+        const key = (item.eventKey || '').trim() || `solo:${item.id}`
+        const bucket = buckets.get(key)
+        if (bucket === undefined) { buckets.set(key, [item]); order.push(key) } else bucket.push(item)
+      }
+      return order.map((key) => {
+        const bucket = buckets.get(key) ?? []
+        const main = bucket.find(i => (i.sourceKey ?? '') === 'official') ?? (bucket[0] as NewsItem)
+        return { main, also: bucket.filter(i => i.id !== main.id) }
+      })
+    }
+    const itemHtml = (item: NewsItem, also: NewsItem[] = []): string => {
       const topic = newsTopics.find(t => t.id === item.topicId)
       const ai = (item.aiSummary || '').trim()
       const zhTitle = (item.titleZh || '').trim()
@@ -2437,15 +2475,17 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
           ? `<div class="ni-title-src" title="原文标题（机器翻译可能有误，以此为准）">${esc(item.title)}</div>`
           : (zhTitle === '' && needsTranslation(item) ? `<button class="ni-tr" data-act="news-translate-one" data-id="${item.id}" title="翻译这一条">${ic('spark', 11)}翻译</button>` : '')}
         ${text ? `<div class="ni-ai${ai ? '' : ' plain'}"><div class="ni-ai-head">${ic('spark', 11)} ${ai ? 'AI 总结' : (zhSummary ? '摘要 · 机器翻译' : '摘要')}</div><p>${esc(text)}</p>${zhSummary && item.summary && zhSummary !== item.summary ? `<p class="ni-ai-src" title="原文摘要（机器翻译可能有误，以此为准）">${esc(item.summary)}</p>` : ''}</div>` : ''}
-        <div class="ni-foot">${item.source ? `<span>${esc(item.source)}</span>` : ''}${item.publishedAt ? `<span>${esc(item.publishedAt)}</span>` : ''}<a href="${esc(item.url)}" target="_blank" rel="noreferrer noopener">查看原文</a></div>
+        <div class="ni-foot">${item.source ? `<span>${esc(item.source)}</span>` : ''}${item.publishedAt ? `<span>${esc(item.publishedAt)}</span>` : ''}${heatText(item) ? `<span class="ni-heat" title="热度：${item.heatKind === 'points' ? 'Hacker News 分数' : 'GitHub 日增星数'}">${heatText(item)}</span>` : ''}<a href="${esc(item.url)}" target="_blank" rel="noreferrer noopener">查看原文</a></div>
+        ${also.length > 0 ? `<div class="ni-also">${also.map(i => `也见于 ${esc(i.source || NEWS_ITEM_SOURCE_LABEL[i.sourceKey ?? ''] || '其它源')}${heatText(i) ? ` ${heatText(i)}` : ''}`).join(' · ')}</div>` : ''}
       </article>`
     }
+    const grouped = groupByEvent(filtered)
     const feed = topics.length === 0
       ? `<div class="news-empty"><div class="ne-icon">${ic('news', 22)}</div><b>还没有新闻订阅</b><span>选一个预置主题，或自己填关键词与检索时间；DSH 到点会用 Agent 搜索并把结果写回这里。</span><div class="news-presets" style="justify-content:center;margin:4px 0 2px">${NEWS_PRESETS.map((p, i) => `<button class="chip" data-act="news-preset" data-index="${i}">${esc(p.title)}</button>`).join('')}</div><button class="btn-primary" data-act="news-add" style="margin-top:4px">${ic('plus', 14)}自定义订阅</button></div>`
-      : `<div class="news-feed-head"><b>最新新闻</b><span class="muted">${filtered.length} 条${ui.newsTopicFilter === 'all' ? '' : ' · 已按主题筛选'}</span>
+      : `<div class="news-feed-head"><b>最新新闻</b><span class="muted">${grouped.length} 条${filtered.length > grouped.length ? `（含 ${filtered.length - grouped.length} 条跨源重复已合并）` : ''}${ui.newsTopicFilter === 'all' ? '' : ' · 已按主题筛选'}</span>
           ${untranslated > 0 || ui.newsTranslating ? `<button class="btn ni-tr-all" data-act="news-translate-all" ${ui.newsTranslating ? 'disabled' : ''} title="把本页未翻译的英文条目翻成中文">${ic('spark', 12)}${ui.newsTranslating ? '翻译中…' : `翻译 ${untranslated} 条`}</button>` : ''}</div>
         ${filters}
-        ${filtered.length === 0 ? `<div class="news-empty small"><b>还没有检索结果</b><span>等待下一次定时任务，或点上方订阅卡片的「检索」立即运行一次。</span></div>` : `<div class="news-list">${filtered.map(itemHtml).join('')}</div>`}`
+        ${filtered.length === 0 ? `<div class="news-empty small"><b>还没有检索结果</b><span>等待下一次定时任务，或点上方订阅卡片的「检索」立即运行一次。</span></div>` : `<div class="news-list">${grouped.map(g => itemHtml(g.main, g.also)).join('')}</div>`}`
     return head + banner + stats + topicCards + feed
   }
 

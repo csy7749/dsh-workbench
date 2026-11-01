@@ -383,6 +383,9 @@ CREATE TABLE IF NOT EXISTS news_items (
   kind TEXT NOT NULL DEFAULT '',
   title_zh TEXT NOT NULL DEFAULT '',
   summary_zh TEXT NOT NULL DEFAULT '',
+  heat REAL NOT NULL DEFAULT 0,
+  heat_kind TEXT NOT NULL DEFAULT '',
+  event_key TEXT NOT NULL DEFAULT '',
   fetched_at TEXT NOT NULL,
   hash TEXT NOT NULL,
   UNIQUE(topic_id, hash)
@@ -509,12 +512,23 @@ class SqliteStore {
     if (!columns('news_items').includes('ai_summary')) this.db.exec("ALTER TABLE news_items ADD COLUMN ai_summary TEXT NOT NULL DEFAULT ''")
     /* 结构化来源与类型：source 是给人看的「站点 · 类型」文本，这两列是给筛选/统计用的枚举。
        source_key：official | github | community | media（自由文本兜底为空串）
-       kind：update | dlc | announcement | dev | community | data | review | peripheral */
+       kind：release | oss-launch | tutorial | deep-dive | paper | tool-update | other */
     if (!columns('news_items').includes('source_key')) this.db.exec("ALTER TABLE news_items ADD COLUMN source_key TEXT NOT NULL DEFAULT ''")
     if (!columns('news_items').includes('kind')) this.db.exec("ALTER TABLE news_items ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
     /* 中文译文列：原文永远留在 title/summary，这两列只放机器翻译结果，空串表示没翻 */
     if (!columns('news_items').includes('title_zh')) this.db.exec("ALTER TABLE news_items ADD COLUMN title_zh TEXT NOT NULL DEFAULT ''")
     if (!columns('news_items').includes('summary_zh')) this.db.exec("ALTER TABLE news_items ADD COLUMN summary_zh TEXT NOT NULL DEFAULT ''")
+    /* 热度（2026-11-01）：采集时本来是有的，只是入库时被丢掉了 —— HN 的 points/评论数、
+       GitHub 发现流的 star 增速。不同源量纲完全不同（points 是几十上百的整数，
+       star 增速是「每天几颗星」的小数），所以**不做归一化**：存各源自己的原始值，
+       另用 heat_kind 标明这是哪种量。排序只看同类之间，跨源比大小没有意义。 */
+    if (!columns('news_items').includes('heat')) this.db.exec('ALTER TABLE news_items ADD COLUMN heat REAL NOT NULL DEFAULT 0')
+    if (!columns('news_items').includes('heat_kind')) this.db.exec("ALTER TABLE news_items ADD COLUMN heat_kind TEXT NOT NULL DEFAULT ''")
+    /* 事件键（2026-11-01）：同一件事被官方博客和 HN 各收一条时，两条 hash（=sha256(url)）
+       必然不同，各占一张卡。event_key 只按「规范化 URL」算，两条自然撞在一起。
+       刻意不做标题相似度/语义匹配——误合并比重复更难收拾。 */
+    if (!columns('news_items').includes('event_key')) this.db.exec("ALTER TABLE news_items ADD COLUMN event_key TEXT NOT NULL DEFAULT ''")
+    this.migrateNewsEventKeys()
     this.backfillNewsClassification()
     if (!columns('notes').includes('map_id')) this.db.exec("ALTER TABLE notes ADD COLUMN map_id TEXT NOT NULL DEFAULT ''")
     /* 设计文档升级：把「笔记」区分为 业务模块设计 / 产品设计 / 功能设计，并带上稳定的幂等键
@@ -588,6 +602,26 @@ class SqliteStore {
     } catch (cause) {
       this.db.exec('ROLLBACK')
       console.warn('[dsh-workbench] kind 迁移失败（已回滚）：', cause)
+    }
+  }
+
+  /**
+   * 老条目补 event_key：只计算，不删条目（2026-11-01）。
+   * 幂等：只碰 event_key 为空的行走 UPDATE，第二遍没有行命中。
+   * 计算规则与入库时完全一致（同一张 normalizeNewsUrl 表），所以纯属补齐，不需要备份。
+   */
+  private migrateNewsEventKeys(): void {
+    const rows = this.db.prepare("SELECT id, url FROM news_items WHERE event_key = ''").all() as any[]
+    if (rows.length === 0) return
+    const upd = this.db.prepare('UPDATE news_items SET event_key = ? WHERE id = ?')
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const row of rows) upd.run(newsEventKey(String(row.url ?? '')), String(row.id))
+      this.db.exec('COMMIT')
+      console.log(`[dsh-workbench] event_key 补齐：${rows.length} 条`)
+    } catch (cause) {
+      this.db.exec('ROLLBACK')
+      console.warn('[dsh-workbench] event_key 补齐失败（已回滚）：', cause)
     }
   }
 
@@ -1001,9 +1035,9 @@ class SqliteStore {
     let skipped = 0
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const ins = this.db.prepare('INSERT OR IGNORE INTO news_items(id, topic_id, title, url, source, source_key, kind, published_at, summary, ai_summary, title_zh, summary_zh, fetched_at, hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      const ins = this.db.prepare('INSERT OR IGNORE INTO news_items(id, topic_id, title, url, source, source_key, kind, published_at, summary, ai_summary, title_zh, summary_zh, heat, heat_kind, event_key, fetched_at, hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
       for (const item of rows) {
-        const result = ins.run(`ni-${randomUUID().slice(0, 16)}`, topicId, item.title, item.url, item.source, item.sourceKey, item.kind, item.publishedAt, item.summary, item.aiSummary, item.titleZh, item.summaryZh, now, item.hash)
+        const result = ins.run(`ni-${randomUUID().slice(0, 16)}`, topicId, item.title, item.url, item.source, item.sourceKey, item.kind, item.publishedAt, item.summary, item.aiSummary, item.titleZh, item.summaryZh, item.heat, item.heatKind, item.eventKey, now, item.hash)
         if (Number(result?.changes ?? 0) > 0) inserted += 1
         else skipped += 1
       }
@@ -3912,7 +3946,7 @@ class JsonStore {
       sourceHealth: t.sourceHealth ?? {},
     }))
     const items = this.newsItems.slice().sort((x, y) => String(y.fetchedAt).localeCompare(String(x.fetchedAt))).slice(0, 400)
-      .map(i => ({ ...i, kind: normalizeNewsKind(i.kind), aiSummary: String(i.aiSummary ?? ''), titleZh: String(i.titleZh ?? ''), summaryZh: String(i.summaryZh ?? '') }))
+      .map(i => ({ ...i, kind: normalizeNewsKind(i.kind), aiSummary: String(i.aiSummary ?? ''), titleZh: String(i.titleZh ?? ''), summaryZh: String(i.summaryZh ?? ''), heat: Number(i.heat ?? 0), heatKind: String(i.heatKind ?? ''), eventKey: String(i.eventKey ?? '') || newsEventKey(String(i.url ?? '')) }))
     return { topics, items }
   }
   updateNewsTranslation(rows: Array<{ id: string; titleZh: string; summaryZh: string }>): number {
@@ -3994,7 +4028,7 @@ class JsonStore {
     let skipped = 0
     for (const item of rows) {
       if (this.newsItems.some(i => i.topicId === topicId && i.hash === item.hash)) { skipped += 1; continue }
-      this.newsItems.push({ id: `ni-${randomUUID().slice(0, 16)}`, topicId, title: item.title, url: item.url, source: item.source, sourceKey: item.sourceKey, kind: item.kind, publishedAt: item.publishedAt, summary: item.summary, aiSummary: item.aiSummary, titleZh: item.titleZh, summaryZh: item.summaryZh, fetchedAt: now, hash: item.hash })
+      this.newsItems.push({ id: `ni-${randomUUID().slice(0, 16)}`, topicId, title: item.title, url: item.url, source: item.source, sourceKey: item.sourceKey, kind: item.kind, publishedAt: item.publishedAt, summary: item.summary, aiSummary: item.aiSummary, titleZh: item.titleZh, summaryZh: item.summaryZh, heat: item.heat, heatKind: item.heatKind, eventKey: item.eventKey, fetchedAt: now, hash: item.hash })
       inserted += 1
     }
     topic.lastRunAt = now
@@ -4954,6 +4988,11 @@ function toNewsItem(row: any): any {
     kind: normalizeNewsKind(row.kind),
     titleZh: row.title_zh ?? '',
     summaryZh: row.summary_zh ?? '',
+    /* 热度：heat_kind 为空说明这源本来不产热度，前端据此不显示 */
+    heat: Number(row.heat ?? 0),
+    heatKind: row.heat_kind ?? '',
+    /** 同一事件的分组键（规范化 URL 派生）；空串表示老数据还没补 */
+    eventKey: row.event_key ?? '',
     fetchedAt: row.fetched_at,
   }
 }
@@ -5055,7 +5094,10 @@ function isOffTopicNews(input: { title: string; summary: string; aiSummary?: str
   return !NEWS_TECH_TERMS.some((re) => re.test(text))
 }
 
-type CleanNewsItem = { title: string; url: string; source: string; sourceKey: string; kind: string; publishedAt: string; summary: string; aiSummary: string; titleZh: string; summaryZh: string; hash: string }
+type CleanNewsItem = { title: string; url: string; source: string; sourceKey: string; kind: string; publishedAt: string; summary: string; aiSummary: string; titleZh: string; summaryZh: string; heat: number; heatKind: string; eventKey: string; hash: string }
+
+/** heat_kind 白名单。空串＝这源不给热度。points 是 HN 的分数，star-velocity 是 GitHub 的日增星数。 */
+const NEWS_HEAT_KINDS = ['', 'points', 'star-velocity']
 
 /** 解析 YYYY-MM-DD / YYYY-MM-DD HH:mm / ISO 日期；解析不出返回 null。 */
 function parseNewsDate(text: string): number | null {
@@ -5063,6 +5105,42 @@ function parseNewsDate(text: string): number | null {
   if (!m) return null
   const t = Date.parse(`${m[1]}-${m[2]}-${m[3]}T00:00:00`)
   return Number.isFinite(t) ? t : null
+}
+
+/**
+ * 规范化 URL，用于判断「是不是同一个链接」（事件合并用）。
+ *
+ * 只做**确定性的**几件事：去 utm_* / fbclid / gclid 这类跟踪参数、去 ref/from 这类来源参数、
+ * 去尾部斜杠、去 `www.`、统一小写、丢掉 #fragment。
+ * **不做**模糊匹配（标题相似度、域名别名、短链展开）：那种误合并比留两条重复更难收拾。
+ */
+const NEWS_TRACKING_PARAMS = /^(utm_|fbclid$|gclid$|mc_cid$|mc_eid$|ref$|referrer$|source$|from$|spm$|share_)/i
+
+function normalizeNewsUrl(raw: string): string {
+  let parsed: URL
+  try { parsed = new URL(str(raw)) } catch { return str(raw).trim().toLowerCase() }
+  return normalizeParsedUrl(parsed)
+}
+
+function normalizeParsedUrl(parsed: URL): string {
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, '')
+  const params = Array.from(parsed.searchParams.entries())
+    .filter(([key]) => !NEWS_TRACKING_PARAMS.test(key))
+    .sort(([a], [b]) => a.localeCompare(b))
+  const search = params.length === 0 ? '' : `?${params.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')}`
+  const path = parsed.pathname.replace(/\/+$/, '')
+  const port = parsed.port === '' ? '' : `:${parsed.port}`
+  return `${host}${port}${path}${search}`
+}
+
+/**
+ * 事件键：同一规范化 URL 归一成同一个短串，用来把「官方博客 + HN 讨论」合并成一张卡。
+ * 只用 URL 一个信号，所以两条必然指向同一个页面——这是合并唯一不会出错的情形。
+ */
+function newsEventKey(raw: string): string {
+  const normalized = normalizeNewsUrl(raw)
+  if (normalized === '') return ''
+  return `ev-${createHash('sha256').update(normalized).digest('hex').slice(0, 16)}`
 }
 
 /**
@@ -5105,7 +5183,14 @@ function cleanNewsItemsDetailed(value: unknown): { items: CleanNewsItem[]; dropp
     const titleZh = str(raw?.titleZh).trim().slice(0, 300)
     const summaryZh = str(raw?.summaryZh).trim().slice(0, 600)
     const hash = createHash('sha256').update(url.toLowerCase()).digest('hex').slice(0, 32)
-    items.push({ title, url, source, sourceKey, kind, publishedAt, summary, aiSummary, titleZh, summaryZh, hash })
+    /* 热度：原样保留采集器给的值，只做量纲校验（认不出的 kind 一律不带热度，
+       免得把 stars 当成 points 显示成「▲ 1200」）。 */
+    const heatRaw = Number(raw?.heat ?? 0)
+    /* 保留两位小数：star 增速算出来是 24.90916419682822，落库这么长没意义 */
+    const heat = Number.isFinite(heatRaw) && heatRaw > 0 ? Math.round(heatRaw * 100) / 100 : 0
+    const heatKindRaw = str(raw?.heatKind).trim().toLowerCase()
+    const heatKind = heat > 0 && NEWS_HEAT_KINDS.includes(heatKindRaw) && heatKindRaw !== '' ? heatKindRaw : ''
+    items.push({ title, url, source, sourceKey, kind, publishedAt, summary, aiSummary, titleZh, summaryZh, heat, heatKind, eventKey: newsEventKey(url), hash })
     if (items.length >= 20) break
   }
   return { items, dropped }
@@ -7204,6 +7289,8 @@ export function apply(ctx: any): void {
           const raw = result.items.map((it, index) => ({
             title: it.title, url: it.url, source: it.source, sourceKey: it.sourceKey,
             kind: it.kind, publishedAt: it.publishedAt, summary: it.summary,
+            /* 热度与事件键都由采集器给出，这里原样往下传（清洗层只做量纲校验） */
+            heat: it.heat ?? 0, heatKind: it.heatKind ?? '',
             titleZh: translated?.items[index]?.titleZh ?? '',
             summaryZh: translated?.items[index]?.summaryZh ?? '',
           }))

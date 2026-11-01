@@ -48,6 +48,12 @@ export type RawNewsItem = {
   kind: NewsKind
   publishedAt: string
   summary: string
+  /**
+   * 热度（2026-11-01）：各源自己的原始值，**不做跨源归一化**——points 是几十上百的整数，
+   * star 增速是「每天几颗星」的小数，混在一起比大小没有意义。heatKind 标明量纲。
+   */
+  heat?: number
+  heatKind?: 'points' | 'star-velocity' | ''
 }
 
 export type SourceRun = {
@@ -471,6 +477,9 @@ async function collectGithubDiscovery(limit: number, params: Record<string, stri
           kind: queries[i].kind,
           publishedAt: new Date(created).toISOString().slice(0, 10),
           summary: metrics.slice(0, 600),
+          /* 热度＝star 增速（stars/ageDays）：这才是「新鲜好用」的判据，绝对 star 数只会把老项目顶在前面 */
+          heat: velocity,
+          heatKind: 'star-velocity',
         },
       })
     }
@@ -624,6 +633,9 @@ async function collectHackerNews(limit: number, params: Record<string, string>):
             kind: 'other',
             publishedAt: toDateOnly(String(h.created_at ?? '')),
             summary: plainText(`${points} 分 · ${comments} 条讨论 · ${String(h.url || hnLink)}`, 600),
+            /* 热度＝HN 分数（评论数已写进摘要，不再单列一个量纲） */
+            heat: points,
+            heatKind: 'points',
           }
         })
         .filter((x) => {
