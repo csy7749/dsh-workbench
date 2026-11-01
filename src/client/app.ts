@@ -45,7 +45,15 @@ interface NewsTopic {
 }
 interface NewsItem {
   id: string; topicId: string; title: string; url: string; source: string
+  /** 来源类别枚举：official / github / community / media（宿主端白名单，非法值落库为空串） */
+  sourceKey?: string
+  /** 内容类型枚举：update / dlc / announcement / dev / community / data / review / peripheral */
+  kind?: string
   publishedAt: string; summary: string; aiSummary: string; fetchedAt: string
+  /** 机翻中文标题；空串=没翻（已是中文 / 翻译失败）。原文永远留在 title 里 */
+  titleZh?: string
+  /** 机翻中文摘要；空串=没翻 */
+  summaryZh?: string
 }
 interface Notebook {
   id: string; name: string; workspacePath?: string; count?: number; createdAt: string; updatedAt: string
@@ -116,7 +124,7 @@ interface ProjectCard {
 }
 interface Module {
   id: string; productId: string; mapId?: string; parentId: string; name: string; kind: 'module' | 'business' | 'feature' | 'requirement'
-  platform: 'pc' | 'mobile' | 'tablet' | 'all'; description: string; noteId: string; status: string
+  platform: 'pc' | 'dsh' | 'mobile' | 'tablet' | 'all'; description: string; noteId: string; status: string
   /** 关联的导图节点 id（v2 图模型）；空表示未关联。 */
   nodeId?: string; sortOrder?: number; archivedAt?: string
 }
@@ -172,6 +180,7 @@ interface Ui {
   subNoteId: string | null
   newsTopicFilter: string
   newsLoading: boolean
+  newsTranslating: boolean
   newsError: string
   notesQ: string
   notesFilter: string
@@ -427,7 +436,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   let ctxMenuOpen = false
   let productPicked = new Set<string>()
   let productStyle = 'clean'
-  let productPlatform: 'pc' | 'mobile' | 'tablet' | 'all' = 'all'
+  let productPlatform: 'pc' | 'dsh' | 'mobile' | 'tablet' | 'all' = 'all'
   let productDemoKind: 'page' | 'system' = 'page'
   let demoViewport: 'pc' | 'tablet' | 'mobile' = 'pc'
   let demoProgress: DemoProgress | null = null
@@ -635,7 +644,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     collapsed: hostEl.clientWidth > 0 ? hostEl.clientWidth < 1250 : window.innerWidth < 1450,
     calendarMode: 'week', calendarAnchor: todayKey(),
     filter: 'all', sort: 'time', compact: false, queueQ: '', statsPeriod: 'week', focusExpand: false, subNoteId: null,
-    newsTopicFilter: 'all', newsLoading: false, newsError: '',
+    newsTopicFilter: 'all', newsLoading: false, newsTranslating: false, newsError: '',
     notesQ: '', notesFilter: 'all', noteMode: 'edit',
   }
   const timer: Timer = { preset: 25, running: false, remaining: 25 * 60, endsAt: 0, taskId: null }
@@ -2015,6 +2024,15 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     { title: '开源项目', query: 'GitHub 开源 项目 发布' },
   ]
 
+  /** 来源类别与内容类型的展示名；空串表示模型没给或给了非法值（宿主端会落库为空）。 */
+  const NEWS_ITEM_SOURCE_LABEL: Record<string, string> = { official: '官方', github: 'GitHub', community: '社区', media: '媒体' }
+  const NEWS_ITEM_KIND_LABEL: Record<string, string> = {
+    update: '版本更新', dlc: 'DLC', announcement: '公告', dev: '开发进展',
+    community: '社区热议', data: '数据', review: '评测', peripheral: '周边',
+    // 游戏技术雷达口径：GitHub 发现的开源项目与工具、教程、论文
+    oss: '开源项目', tool: '工具', tutorial: '教程', paper: '论文',
+  }
+
   function parseTimeList(text: string): string[] {
     const out: string[] = []
     for (const raw of text.split(/[,，、;；\s]+/)) {
@@ -2053,10 +2071,13 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   function topicStatus(topic: NewsTopic): { label: string; cls: string } {
     const started = newsRunning[topic.id]
     if (started !== undefined && Date.now() - started < 240_000) return { label: '检索中', cls: 'green' }
+    /* 没有 cron 任务不代表「坏了」：这类订阅的「检索」走直连采集，点一次采一次，
+       只是不会自己定时跑，所以标签要写成「手动采集」而不是「未同步」。 */
+    if (topic.cronTaskIds.length === 0) return { label: '手动采集', cls: 'gray' }
     if (!cronAvailable) return { label: '未连接', cls: 'amber' }
     if (!topic.enabled) return { label: '已暂停', cls: 'gray' }
     const tasks = topic.cronTaskIds.map(id => cronTasks.find(t => t.id === id)).filter(Boolean) as CronTask[]
-    if (tasks.length === 0) return { label: '未同步', cls: 'amber' }
+    if (tasks.length === 0) return { label: '手动采集', cls: 'gray' }
     const paused = tasks.filter(t => t.status === 'paused').length
     if (paused === tasks.length) return { label: '已暂停', cls: 'gray' }
     if (paused > 0) return { label: '部分暂停', cls: 'amber' }
@@ -2087,18 +2108,42 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
     return stamp.slice(0, 10)
   }
+  /**
+   * 新闻检索提示词。这里改了不影响已建好的 dsh-cron 任务——它们存的是保存订阅那一刻的快照，
+   * 由 ensureCronPromptSync 在下次进新闻页时就地刷新，或重新保存一次订阅覆盖。
+   */
   function newsPrompt(topic: NewsTopic): string {
-    return `你是「个人工作台」的新闻检索助手。\n`
-      + `订阅主题：${topic.title}\n检索关键词：${topic.query}\n\n`
-      + `请检索最近 24–48 小时与关键词相关的最新新闻，优先中文来源；最多 ${Math.max(1, Math.min(20, topic.count || 6))} 条，只保留可核实的可靠来源。\n`
-      + `为每条整理：\n`
-      + `- title：准确标题或准确译名\n- source：媒体名\n- url：http/https 原文链接（不得编造）\n`
-      + `- publishedAt：YYYY-MM-DD（未知可留空）\n- summary：中文一句话，不超过 60 字\n`
-      + `- aiSummary：AI 总结，100–180 字中文，说明发生了什么、关键数据/观点、对行业或读者的影响；这是卡片上展示的正文，不要写成关键词堆砌\n\n`
-      + `不要编造 URL、标题或日期；同一事件合并。\n`
-      + `完成后必须调用工具 workbench_news_publish，参数：\n`
+    const target = Math.max(1, Math.min(20, topic.count || 6))
+    return `你是「个人工作台」的新闻检索助手，任务是为一个订阅主题收集一轮可核实的资讯。\n`
+      + `订阅主题：${topic.title}\n`
+      + `检索词：${topic.query}\n`
+      + `把检索词按空格拆成若干个词，每个词都要单独检索一次；主题若是作品/产品，再用它的英文名、简称或别名、开发组或厂商名各检索一次。\n`
+      + `【时间】普通资讯只收最近 14 天内的；版本更新、DLC、公告类放宽到最近 180 天，但必须是仍生效的版本说明，别把几个月前的老补丁当新闻。publishedAt 必须填真实发布日期——服务端会按日期丢弃过旧条目。\n\n`
+      + `【数量】目标 ${target} 条。不足 ${target} 条时必须换词续搜（同义词、英文名、别名、厂商名），最多再搜两轮；确实凑不满才少给，并在最后一条的 aiSummary 里写明缺哪一类。禁止为了凑数塞不相关内容。\n\n`
+      + `【相关性】每条入库前自检一次：这条的主体是不是「${topic.title}」本身？主体是别的作品、别的公司、只是顺带提到本主题的，一律丢弃。宁可少，不许拿不相关的充数。\n\n`
+      + `【来源】下面四类都要主动找，最终至少覆盖其中 3 类：\n`
+      + `1. 一手/官方：官网、官方公告、发行商或开发组账号、Steam 商店页与更新日志\n`
+      + `2. 代码/版本：GitHub Releases / Tags / CHANGELOG（主题涉及开源项目时必须有）\n`
+      + `3. 社区：B站、知乎、NGA、贴吧、Reddit、小黑盒\n`
+      + `4. 媒体：游民星空、3DM、IGN、GameSpot、17173 等\n`
+      + `source 写成「站点名 · 类型」，例如「GitHub · Releases」「B站 · 官方号」「3DM · 媒体」；同时给 sourceKey：official / github / community / media。\n\n`
+      + `【类型】kind 取值与优先级，且至少 1 条属于前三项：\n`
+      + `1. update：版本更新 / 补丁说明\n`
+      + `2. dlc：DLC / 资料片\n`
+      + `3. announcement：官方公告、发售日、官方声明\n`
+      + `4. dev：开发进展、访谈\n`
+      + `5. community：社区热议、争议\n`
+      + `6. data：在线人数、销量、榜单数据\n`
+      + `7. review：媒体评测\n`
+      + `8. peripheral：周边商品、联动活动——只有前面凑不满才用，且最多 1 条\n\n`
+      + `【去重】同一事件只留一条，取信息量最大、来源更靠前的那篇。\n\n`
+      + `每条整理：\n`
+      + `- title：准确标题或准确译名\n- source：站点名 · 类型\n- sourceKey：official / github / community / media\n- kind：上表取值\n- url：http/https 原文链接，不得编造\n`
+      + `- publishedAt：YYYY-MM-DD，未知留空\n- summary：中文一句话，不超过 60 字\n`
+      + `- aiSummary：100–180 字中文，说明发生了什么、关键数据、对读者的影响；卡片正文就展示它，别写成关键词堆砌\n\n`
+      + `不要编造 URL、标题或日期。完成后必须调用工具 workbench_news_publish，参数：\n`
       + `{"topicId":"${topic.id}","items":[...]}\n`
-      + `没有合适新闻时也调用一次，items 传空数组。不要输出其他内容。`
+      + `一条都没有也调用一次，items 传空数组。不要输出其他内容。`
   }
   async function cronFetch(path: string, init?: RequestInit): Promise<any> {
     const res = await fetch(`/dsh-cron${path}`, {
@@ -2145,6 +2190,69 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     }
     return created
   }
+  /* 提示词在订阅保存时被快照进 cron 任务：代码里改了提示词，老订阅仍会用旧的那份，
+     直到用户重新保存一次。所以每次进新闻页比对一次，发现漂移就地把任务提示词刷新成当前版本。
+     每会话只比一次；失败静默——提示词漂移不该挡住新闻列表。 */
+  let cronPromptChecked = false
+  async function ensureCronPromptSync(): Promise<void> {
+    if (cronPromptChecked || newsTopics.length === 0) return
+    cronPromptChecked = true
+    try {
+      const data = await cronFetch('/tasks')
+      const tasks: any[] = Array.isArray(data) ? data : (data?.tasks ?? data?.data ?? [])
+      const byId = new Map<string, any>(tasks.map((t: any) => [String(t.id), t]))
+      for (const topic of newsTopics) {
+        const want = newsPrompt(topic)
+        for (const id of topic.cronTaskIds) {
+          const task = byId.get(id)
+          if (!task || task.prompt === want) continue
+          await cronFetch(`/tasks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ prompt: want }) })
+        }
+      }
+    } catch { /* 尽力而为 */ }
+  }
+  /**
+   * 按需翻译。itemIds 为空＝翻译本页所有未翻的英文条目。
+   *
+   * 为什么做成按钮而不是采集时自动翻：有道免费接口的配额是「约 120 秒内 6 次」，
+   * 一次 10 条的采集要 20 次请求，必然撞 411。按钮把「什么时候花额度」交给用户，
+   * 一条也就 2 次请求，额度刚好够用。服务端有 MyMemory 兜底，撞了也不会空白。
+   */
+  async function translateNewsItems(ids: string[]): Promise<void> {
+    if (ui.newsTranslating) return
+    ui.newsTranslating = true
+    renderContent()
+    try {
+      const res = await fetch(`${API}/news/translate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ itemIds: ids }),
+      })
+      const data = await res.json() as { ok?: boolean; translated?: number; changed?: number; report?: { provider?: string; fallbacks?: number; failed?: number; untranslatable?: number }; error?: string }
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`)
+      const done = Number(data.translated ?? 0)
+      if (done === 0) {
+        /* 三种「一条都没成」要分开说，否则用户会做错决定：
+           配额用尽 → 等两分钟；纯专名/版本号 → 没有等信息，永远等不到。 */
+        const failed = Number(data.report?.failed ?? 0)
+        const untranslatable = Number(data.report?.untranslatable ?? 0)
+        if (failed > 0) toast(`翻译失败 ${failed} 段：有道配额可能已用尽，稍等 2 分钟再试`)
+        else if (untranslatable > 0) toast('这条没有可翻译的内容（纯版本号或专名），保留原文更准确')
+        else toast('没有可翻译的条目')
+      }
+      else {
+        const via = data.report?.provider === 'youdao' ? '有道' : (data.report?.provider === 'youdao+mymemory' ? '有道 + MyMemory 兜底' : 'MyMemory')
+        const failed = Number(data.report?.failed ?? 0)
+        toast(`已翻译 ${done} 条（${via}）${failed > 0 ? `，${failed} 段未成功` : ''}`)
+      }
+      await loadNews(true)
+    } catch (cause) {
+      toast(`翻译失败：${String((cause as Error).message ?? cause)}`)
+    } finally {
+      ui.newsTranslating = false
+      renderContent()
+    }
+  }
   async function loadNews(silent = false): Promise<void> {
     if (!loaded) return
     lastNewsPoll = Date.now()
@@ -2161,6 +2269,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       newsItems = Array.isArray(data.items) ? data.items : []
       newsLoadedAt = Date.now()
       ui.newsError = ''
+      void ensureCronPromptSync()
     } catch (cause) {
       ui.newsError = String((cause as Error).message ?? cause)
     }
@@ -2204,11 +2313,29 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   function renderNews(): string {
     const topics = newsTopics.slice().sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.createdAt.localeCompare(b.createdAt))
     const filtered = ui.newsTopicFilter === 'all' ? newsItems : newsItems.filter(i => i.topicId === ui.newsTopicFilter)
+    /* 需要翻译的判据：还没译文 + 标题里没有中文。
+       用「CJK 占比」而不是语种检测——中文媒体（机核等）的标题本来就中文，
+       给它们显示「翻译」按钮只会让人点出一堆空结果。 */
+    const needsTranslation = (item: NewsItem): boolean => {
+      if ((item.titleZh || '').trim() !== '') return false
+      const title = item.title || ''
+      let cjk = 0
+      let total = 0
+      for (const ch of title) {
+        const code = ch.codePointAt(0) ?? 0
+        if (code <= 0x20) continue
+        total += 1
+        if (code >= 0x4e00 && code <= 0x9fff) cjk += 1
+      }
+      return total > 0 && cjk / total < 0.3
+    }
+    const untranslated = filtered.filter(needsTranslation).length
     const today = todayKey()
     const todayCount = newsItems.filter(i => i.fetchedAt.slice(0, 10) === today).length
     const newest = newsItems[0]?.fetchedAt ?? ''
+    const sourceCoverage = new Set(newsItems.map(i => i.sourceKey ?? '').filter(k => k !== '')).size
     const head = `<div class="view-head"><div><div class="eyebrow">新闻检索</div><h1 class="page-title">新闻</h1>
-      <div class="page-sub">按主题与时间用 DSH Agent 检索，结果只保存在本机</div></div>
+      <div class="page-sub">按主题检索技术内容，结果只保存在本机</div></div>
       <div style="display:flex;gap:7px;align-items:center">
         <button class="btn" data-act="news-refresh">${ic('refresh', 13)}刷新</button>
         <button class="btn-primary" data-act="news-add">${ic('plus', 14)}订阅主题</button>
@@ -2218,6 +2345,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       <span><b>${topics.length}</b> 个订阅</span>
       <span><b>${newsItems.length}</b> 条新闻</span>
       <span><b>${todayCount}</b> 条今日入库</span>
+      <span title="来源类别覆盖：official / github / community / media"><b>${sourceCoverage}</b>/4 类来源</span>
       <span class="muted">最近更新 ${newest ? ago(newest) : '—'}${ui.newsLoading ? ' · 同步中…' : ''}</span>
       ${ui.newsError ? `<span style="color:var(--red)">${esc(ui.newsError)}</span>` : ''}
     </div>`
@@ -2225,13 +2353,14 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       const status = topicStatus(topic)
       const next = topicNextRun(topic)
       const taskCount = topic.cronTaskIds.length
+      const running = newsTopicRunning(topic.id)
       return `<div class="news-topic-card">
         <div class="nt-top"><b>${esc(topic.title)}</b><span class="pill ${status.cls}">${status.label}</span></div>
         <div class="nt-query">${ic('search', 11)} ${esc(topic.query)}</div>
-        <div class="nt-meta">${ic('clock', 11)} ${esc(topic.scheduleText || scheduleTextOf(topic.scheduleKind, topic.times, topic.weekday, topic.customCron))} · 每次 ${topic.count ?? 6} 条 · ${taskCount} 个任务</div>
+        <div class="nt-meta">${ic('clock', 11)} ${esc(topic.scheduleText || scheduleTextOf(topic.scheduleKind, topic.times, topic.weekday, topic.customCron))} · 每次 ${topic.count ?? 6} 条 · ${taskCount > 0 ? `${taskCount} 个任务` : '直连采集'}</div>
         <div class="nt-meta">${ic('calendar', 11)} 下次 ${fmtWhen(next)} · 上次入库 ${topic.lastRunAt ? ago(topic.lastRunAt) : '—'}</div>
         <div class="nt-actions">
-          <button class="btn" data-act="news-run" data-id="${topic.id}" title="立即检索">${ic('play', 12)}检索</button>
+          <button class="btn" data-act="news-run" data-id="${topic.id}" title="${taskCount > 0 ? '立即让 Agent 检索一次' : '立即直连采集一次'}" ${running ? 'disabled' : ''}>${ic('play', 12)}${running ? '检索中…' : '检索'}</button>
           <button class="btn" data-act="news-toggle" data-id="${topic.id}" title="${topic.enabled ? '暂停' : '恢复'}">${topic.enabled ? ic('pause', 12) : ic('play', 12)}${topic.enabled ? '暂停' : '恢复'}</button>
           <button class="icon-btn" data-act="news-edit" data-id="${topic.id}" title="编辑">${ic('edit', 14)}</button>
           <button class="icon-btn" data-act="news-delete" data-id="${topic.id}" title="删除">${ic('trash', 14)}</button>
@@ -2251,18 +2380,30 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     const itemHtml = (item: NewsItem): string => {
       const topic = newsTopics.find(t => t.id === item.topicId)
       const ai = (item.aiSummary || '').trim()
-      const text = ai || (item.summary || '').trim()
+      const zhTitle = (item.titleZh || '').trim()
+      const zhSummary = (item.summaryZh || '').trim()
+      /* 正文优先级：模型总结 > 机翻摘要 > 英文原文。
+         这条链的用意是「尽量给中文，但绝不给空」——机翻只做增强，不影响有结果的卡片。 */
+      const text = ai || zhSummary || (item.summary || '').trim()
+      const kindLabel = NEWS_ITEM_KIND_LABEL[item.kind ?? ''] ?? ''
+      const sourceLabel = NEWS_ITEM_SOURCE_LABEL[item.sourceKey ?? ''] ?? ''
       return `<article class="news-item" style="--card-accent:${accentOf(item.source || item.id)}">
         <div class="ni-meta"><span class="news-topic-tag">${esc(topic?.title ?? '新闻')}</span>
+          ${kindLabel ? `<span class="pill ni-kind" title="内容类型">${kindLabel}</span>` : ''}
+          ${sourceLabel ? `<span class="pill ni-source" title="来源类别">${sourceLabel}</span>` : ''}
           <span style="margin-left:auto">${ago(item.fetchedAt)}</span></div>
-        <a class="ni-title" href="${esc(item.url)}" target="_blank" rel="noreferrer noopener">${esc(item.title)} ${ic('external', 12)}</a>
-        ${text ? `<div class="ni-ai${ai ? '' : ' plain'}"><div class="ni-ai-head">${ic('spark', 11)} ${ai ? 'AI 总结' : '摘要'}</div><p>${esc(text)}</p></div>` : ''}
+        <a class="ni-title" href="${esc(item.url)}" target="_blank" rel="noreferrer noopener">${esc(zhTitle || item.title)} ${ic('external', 12)}</a>
+        ${zhTitle && zhTitle !== item.title
+          ? `<div class="ni-title-src" title="原文标题（机器翻译可能有误，以此为准）">${esc(item.title)}</div>`
+          : (zhTitle === '' && needsTranslation(item) ? `<button class="ni-tr" data-act="news-translate-one" data-id="${item.id}" title="翻译这一条">${ic('spark', 11)}翻译</button>` : '')}
+        ${text ? `<div class="ni-ai${ai ? '' : ' plain'}"><div class="ni-ai-head">${ic('spark', 11)} ${ai ? 'AI 总结' : (zhSummary ? '摘要 · 机器翻译' : '摘要')}</div><p>${esc(text)}</p>${zhSummary && item.summary && zhSummary !== item.summary ? `<p class="ni-ai-src" title="原文摘要（机器翻译可能有误，以此为准）">${esc(item.summary)}</p>` : ''}</div>` : ''}
         <div class="ni-foot">${item.source ? `<span>${esc(item.source)}</span>` : ''}${item.publishedAt ? `<span>${esc(item.publishedAt)}</span>` : ''}<a href="${esc(item.url)}" target="_blank" rel="noreferrer noopener">查看原文</a></div>
       </article>`
     }
     const feed = topics.length === 0
       ? `<div class="news-empty"><div class="ne-icon">${ic('news', 22)}</div><b>还没有新闻订阅</b><span>选一个预置主题，或自己填关键词与检索时间；DSH 到点会用 Agent 搜索并把结果写回这里。</span><div class="news-presets" style="justify-content:center;margin:4px 0 2px">${NEWS_PRESETS.map((p, i) => `<button class="chip" data-act="news-preset" data-index="${i}">${esc(p.title)}</button>`).join('')}</div><button class="btn-primary" data-act="news-add" style="margin-top:4px">${ic('plus', 14)}自定义订阅</button></div>`
-      : `<div class="news-feed-head"><b>最新新闻</b><span class="muted">${filtered.length} 条${ui.newsTopicFilter === 'all' ? '' : ' · 已按主题筛选'}</span></div>
+      : `<div class="news-feed-head"><b>最新新闻</b><span class="muted">${filtered.length} 条${ui.newsTopicFilter === 'all' ? '' : ' · 已按主题筛选'}</span>
+          ${untranslated > 0 || ui.newsTranslating ? `<button class="btn ni-tr-all" data-act="news-translate-all" ${ui.newsTranslating ? 'disabled' : ''} title="把本页未翻译的英文条目翻成中文">${ic('spark', 12)}${ui.newsTranslating ? '翻译中…' : `翻译 ${untranslated} 条`}</button>` : ''}</div>
         ${filters}
         ${filtered.length === 0 ? `<div class="news-empty small"><b>还没有检索结果</b><span>等待下一次定时任务，或点上方订阅卡片的「检索」立即运行一次。</span></div>` : `<div class="news-list">${filtered.map(itemHtml).join('')}</div>`}`
     return head + banner + stats + topicCards + feed
@@ -2339,21 +2480,80 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     }
   }
 
+  /**
+   * 「检索」按钮走两条路：
+   * - 订阅有 cron 任务 → 触发 cron Agent 跑模型检索（老路径，Agent 自己调 workbench_news_publish 回写，要轮询）；
+   * - 订阅没有 cron 任务 → 直接打 /news/collect 走确定性直连采集器（news-sources.ts），同步返回。
+   * 以前第二种情况只弹一句「请先编辑保存」，等于直连采集器在界面上没有任何入口，
+   * 库里那 10 条只能靠手工调 API 灌进去。两条路的区别只在这里，结果都进同一张信息流。
+   */
+  const newsTopicRunning = (id: string): boolean => {
+    const started = newsRunning[id]
+    return started !== undefined && Date.now() - started < 240_000
+  }
   async function runNewsTopic(id: string): Promise<void> {
     const topic = newsTopics.find(t => t.id === id)
     if (!topic) return
-    if (topic.cronTaskIds.length === 0) { toast('这个订阅还没有同步到定时任务，请先编辑保存一次'); return }
+    if (newsTopicRunning(id)) { toast('正在检索中，请稍候'); return }
     newsRunning[id] = Date.now()
-    newsWatchUntil = Date.now() + 240_000
-    lastNewsPoll = 0
     renderContent()
-    toast('已触发检索，Agent 完成后会自动刷新')
+    if (topic.cronTaskIds.length > 0) {
+      newsWatchUntil = Date.now() + 240_000
+      lastNewsPoll = 0
+      toast('已触发检索，Agent 完成后会自动刷新')
+      try {
+        await cronFetch(`/tasks/${encodeURIComponent(topic.cronTaskIds[0])}/run`, { method: 'POST' })
+      } catch (cause) {
+        delete newsRunning[id]
+        renderContent()
+        toast(`触发失败：${String((cause as Error).message ?? cause)}`)
+      }
+      return
+    }
+    await collectNewsNow(topic)
+  }
+  /**
+   * 直连采集：拉源、清洗、入库都在 host 一次请求里做完，所以不需要轮询。
+   * 结果必须说清三件事，否则用户无从判断这次点得值不值：采到几条、真新增几条、哪些源挂了。
+   * 单源失败是常态（GitHub 限额、feed 超时），不能吞掉——吞掉会让「只采到 2 条」看起来像没内容。
+   */
+  async function collectNewsNow(topic: NewsTopic): Promise<void> {
+    const id = topic.id
     try {
-      await cronFetch(`/tasks/${encodeURIComponent(topic.cronTaskIds[0])}/run`, { method: 'POST' })
+      const res = await fetch(`${API}/news/collect`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ topicId: id }),
+      })
+      const data = await res.json().catch(() => ({})) as {
+        ok?: boolean; error?: string; collected?: number; inserted?: number; skipped?: number
+        dropped?: { badUrl?: number; stale?: number; future?: number } | null
+        runs?: Array<{ id: string; label?: string; count?: number; ms?: number; error?: string | null }>
+      }
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`)
+      const collected = Number(data.collected ?? 0)
+      const inserted = Number(data.inserted ?? 0)
+      const skipped = Number(data.skipped ?? 0)
+      const dropped = data.dropped
+      const droppedTotal = dropped === null || dropped === undefined
+        ? 0
+        : Number(dropped.badUrl ?? 0) + Number(dropped.stale ?? 0) + Number(dropped.future ?? 0)
+      const failed = (data.runs ?? []).filter(r => typeof r.error === 'string' && r.error !== '')
+      const failedNames = failed.map(r => r.label || r.id).join('、')
+      let msg: string
+      if (collected === 0 && failed.length > 0) msg = `采集失败：${failedNames}`
+      else {
+        msg = `采集 ${collected} 条，新增 ${inserted} 条，重复 ${skipped} 条`
+        if (droppedTotal > 0) msg += `，丢弃 ${droppedTotal} 条（过旧或无效）`
+        if (failed.length > 0) msg += `；失败源：${failedNames}`
+      }
+      toast(msg, failed.length > 0 || droppedTotal > 0 ? 5000 : 2600)
+      await loadNews(true)
     } catch (cause) {
+      toast(`采集失败：${String((cause as Error).message ?? cause)}`, 4000)
+    } finally {
       delete newsRunning[id]
       renderContent()
-      toast(`触发失败：${String((cause as Error).message ?? cause)}`)
     }
   }
 
@@ -3279,7 +3479,7 @@ ${note.content.slice(0, 20_000)}`
       <div class="mfield"><label>描述 / 复现步骤</label><textarea id="wb-bug-desc" rows="4" placeholder="现象、复现步骤、期望结果">${esc(bug?.description ?? '')}</textarea></div>
       <div class="mrow"><div class="mfield"><label>项目</label><select id="wb-bug-project-sel">${bugProjects.map(p => `<option value="${p.id}" ${p.id === projectId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
       <div class="mfield"><label>模块</label><select id="wb-bug-module"><option value="">无模块</option>${productModules.map(m => `<option value="${m.id}" ${(bug?.moduleId ?? '') === m.id ? 'selected' : ''}>${esc(m.name)} · ${m.platform.toUpperCase()}</option>`).join('')}</select></div>
-      <div class="mfield"><label>端</label><select id="wb-bug-platform">${(['all','pc','mobile','tablet']).map(p => `<option value="${p}" ${(bug?.platform ?? 'all') === p ? 'selected' : ''}>${platformLabel(p)}</option>`).join('')}</select></div>
+      <div class="mfield"><label>端</label><select id="wb-bug-platform">${(['all','dsh','pc','mobile','tablet']).map(p => `<option value="${p}" ${(bug?.platform ?? 'all') === p ? 'selected' : ''}>${platformLabel(p)}</option>`).join('')}</select></div>
       <div class="mfield"><label>状态</label><select id="wb-bug-status">${BUG_STATUSES.map(s => `<option value="${s}" ${(bug?.status ?? status ?? 'open') === s ? 'selected' : ''}>${BUG_STATUS_LABEL[s]}</option>`).join('')}</select></div></div>
       <div class="mrow"><div class="mfield"><label>严重程度</label><select id="wb-bug-sev">${(['blocker', 'major', 'minor', 'trivial'] as BugSeverity[]).map(s => `<option value="${s}" ${(bug?.severity ?? 'minor') === s ? 'selected' : ''}>${BUG_SEVERITY_LABEL[s]}</option>`).join('')}</select></div>
       <div class="mfield"><label>优先级</label><select id="wb-bug-prio">${(['P0', 'P1', 'P2', 'P3'] as BugPriority[]).map(p => `<option value="${p}" ${(bug?.priority ?? 'P2') === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div></div>
@@ -4011,10 +4211,10 @@ ${lines}
         <button class="btn-primary" data-act="product-gen-modules">${ic('spark', 12)}AI 生成模块与详细设计</button>
       </div></div>
       ${p !== null ? renderProductProgressBar(p) : ''}
-      <div class="module-coverage"><b>${mods.length}</b> 节点${['all','pc','mobile','tablet'].map(pl => `<span>${platformLabel(pl)} ${mods.filter(m => m.platform === pl).length}</span>`).join('')}<span class="bar">${['all','pc','mobile','tablet'].map((pl, i) => `<i style="width:${mods.length ? Math.round(mods.filter(m => m.platform === pl).length / mods.length * 100) : 0}%;background:${['var(--accent)','var(--green)','var(--orange)','var(--amber)'][i]}"></i>`).join('')}</span></div>
+      <div class="module-coverage"><b>${mods.length}</b> 节点${['all','dsh','pc','mobile','tablet'].map(pl => `<span>${platformLabel(pl)} ${mods.filter(m => m.platform === pl).length}</span>`).join('')}<span class="bar">${['all','dsh','pc','mobile','tablet'].map((pl, i) => `<i style="width:${mods.length ? Math.round(mods.filter(m => m.platform === pl).length / mods.length * 100) : 0}%;background:${['var(--accent)','var(--blue)','var(--green)','var(--orange)','var(--amber)'][i]}"></i>`).join('')}</span></div>
       <div class="module-filters">
         <select id="wb-mod-kind" class="notes-nb-select"><option value="">全部类型</option>${(['module','business','feature','requirement'] as const).map(k => `<option value="${k}" ${filterKind === k ? 'selected' : ''}>${kindName(k)}</option>`).join('')}</select>
-        <select id="wb-mod-platform" class="notes-nb-select"><option value="">全部端</option>${(['pc','mobile','tablet','all'] as const).map(pl => `<option value="${pl}" ${filterPlatform === pl ? 'selected' : ''}>${platformLabel(pl)}</option>`).join('')}</select>
+        <select id="wb-mod-platform" class="notes-nb-select"><option value="">全部端</option>${(['pc','dsh','mobile','tablet','all'] as const).map(pl => `<option value="${pl}" ${filterPlatform === pl ? 'selected' : ''}>${platformLabel(pl)}</option>`).join('')}</select>
         ${filterKind !== '' || filterPlatform !== '' ? `<button class="btn tiny" data-act="product-module-filter-clear">清除筛选</button>` : ''}
         <span class="module-filter-count">${filtered.length === mods.length ? '' : `筛出 ${filtered.length} / ${mods.length}`}</span>
       </div>
@@ -4198,7 +4398,7 @@ ${lines}
     const mapArg = mapId === '' ? '' : `, mapId:"${mapId}"`
     const common = `产品：${product.name}\n简介：${product.description || '未填写'}\n工作区绝对路径：${product.workspacePath}\n产品 ID：${product.id}\n产品笔记本 ID：${product.notebookId}\n${mapLine}\n\n导图 JSON：\n${mapMindmap()}\n\n本次覆盖节点：\n${features || '- （整个产品）'}`
     if (mode === 'modules') {
-      return `产品模块化与详细设计任务：${product.name}\n\n你是资深产品架构师。请把产品拆成「产品 → 模块 → 业务 → 功能 / 需求」，并为每个模块生成详细设计笔记。\n\n${common}\n\n要求：\n1. 先调用 workbench_module_publish 写模块/业务/功能/需求，参数 { productId:"${product.id}"${mapArg}, parentId:"父级模块 id（顶层留空）", nodeId:"可选，对应导图节点 id", name, kind:"module|business|feature|requirement", platform:"pc|mobile|tablet|all", description }。\n1b. **每个节点写完后立刻调用一次 product_progress_publish 上报进度**（step 递增、total=计划拆分的节点总数、status="running"、message="已写：模块名"），全部完成后 total 步 status="done"；失败时 status="failed" 并写明原因。\n2. 每个模块调用 workbench_product_note_publish 生成详细设计笔记，参数包含 productId${mapArg}、moduleId、platform、title、content。\n3. 笔记结构：模块背景 / 范围 / 平台差异 / 信息架构 / 核心流程 / 状态 / 数据与接口 / 权限 / 边界 / 验收。\n4. 模块划分按业务能力，不按页面；平台差异明确写出 PC / 移动 / 平板分别的交互。\n5. 不要只回复正文；必须调用工具；完成后汇总模块清单。`
+      return `产品模块化与详细设计任务：${product.name}\n\n你是资深产品架构师。请把产品拆成「产品 → 模块 → 业务 → 功能 / 需求」，并为每个模块生成详细设计笔记。\n\n${common}\n\n要求：\n1. 先调用 workbench_module_publish 写模块/业务/功能/需求，参数 { productId:"${product.id}"${mapArg}, parentId:"父级模块 id（顶层留空）", nodeId:"可选，对应导图节点 id", name, kind:"module|business|feature|requirement", platform:"pc|dsh|mobile|tablet|all", description }。\n1b. **每个节点写完后立刻调用一次 product_progress_publish 上报进度**（step 递增、total=计划拆分的节点总数、status="running"、message="已写：模块名"），全部完成后 total 步 status="done"；失败时 status="failed" 并写明原因。\n2. 每个模块调用 workbench_product_note_publish 生成详细设计笔记，参数包含 productId${mapArg}、moduleId、platform、title、content。\n3. 笔记结构：模块背景 / 范围 / 平台差异 / 信息架构 / 核心流程 / 状态 / 数据与接口 / 权限 / 边界 / 验收。\n4. 模块划分按业务能力，不按页面；平台差异明确写出 PC / 移动 / 平板分别的交互。\n5. 不要只回复正文；必须调用工具；完成后汇总模块清单。`
     }
     if (mode === 'notes') {
       return `产品设计笔记任务：${product.name}\n\n你是资深产品经理。请基于下面的产品导图和上下文，为每个功能/需求生成独立的设计笔记。\n\n${common}\n\n要求：\n0. 开始前先调用 product_progress_publish { productId:"${product.id}", kind:"notes", mapId:"${productMapSelected}", step:0, total:"\${本次覆盖节点数，请按导图里实际功能/需求个数填写}", message:"开始写设计笔记" }，每写完一篇再上报一次（step 递增，status="running"），全部完成后 total 步 status="done"；失败时 status="failed" 并说明原因。\n1. 每个功能/需求调用一次工具 workbench_product_note_publish。\n2. 参数：{ productId:"${product.id}"${mapArg}, featureId:"节点 id", title:"功能名 + 设计笔记", content:"完整 Markdown", tags:["产品设计"] }。\n3. 笔记结构固定：背景 / 目标 / 用户故事 / 核心流程 / 交互与状态 / 边界与异常 / 验收标准。\n4. 多写具体交互、状态与验收，不要写空泛套话；不要遗漏节点。\n5. 全部写完后用简短清单汇报。\n6. 不修改工作区其他文件；笔记由工具负责落库与工作区 Markdown。`
@@ -4356,7 +4556,7 @@ ${common}
     openModal(`<h3>编辑节点</h3>
       <div class="mfield"><label>名称</label><input id="wb-pn-edit-label" value="${esc(node.label)}"></div>
       <div class="mfield"><label>类型</label><select id="wb-pn-edit-kind">${PRODUCT_KIND_OPTIONS.map(k => `<option value="${k}" ${k === node.kind ? 'selected' : ''}>${kindLabel(k)}</option>`).join('')}</select></div>
-      <div class="mfield"><label>端</label><select id="wb-pn-edit-platform">${(['', 'all', 'pc', 'mobile', 'tablet'] as const).map(p => `<option value="${p}" ${p === (node.platform ?? '') ? 'selected' : ''}>${p === '' ? '未指定' : platformLabel(p)}</option>`).join('')}</select></div>
+      <div class="mfield"><label>端</label><select id="wb-pn-edit-platform">${(['', 'all', 'pc', 'dsh', 'mobile', 'tablet'] as const).map(p => `<option value="${p}" ${p === (node.platform ?? '') ? 'selected' : ''}>${p === '' ? '未指定' : platformLabel(p)}</option>`).join('')}</select></div>
       <div class="mfield"><label>状态</label><select id="wb-pn-edit-status">${(['kept', 'pending', 'dropped'] as const).map(s => `<option value="${s}" ${s === (node.status ?? 'kept') ? 'selected' : ''}>${s === 'kept' ? '采纳' : s === 'pending' ? '待定' : '放弃'}</option>`).join('')}</select></div>
       <div class="mfield"><label>说明（≤200 字）</label><textarea id="wb-pn-edit-detail" rows="3">${esc(node.detail ?? '')}</textarea></div>
       <div class="modal-foot"><button class="btn" data-act="close-modal">取消</button><button class="btn solid" data-act="product-node-update" data-id="${node.id}">保存</button></div>`)
@@ -4731,7 +4931,7 @@ ${common}
       return `- 文字：${item.kind}`
     }).join('\n')
     const note = $id<HTMLTextAreaElement>('wb-ai-note')?.value.trim() ?? ''
-    return `产品导图提炼任务：${product.name}\n\n你是资深产品经理 + 竞品分析师。请根据下面这些素材，提炼出一张**产品思维导图**（产品 → 模块 → 业务 → 功能 / 需求）。\n\n产品：${product.name}\n简介：${product.description || '未填写'}\n产品 ID：${product.id}\n工作区：${product.workspacePath}\n本次新建导图名称：${name}\n${note === '' ? '' : `关注点：${note}\n`}\n【素材】\n${lines}\n\n要求：\n1. 先逐个读取素材：截图读图、链接抓正文；把每个素材里出现的页面/板块/功能列成清单，并标注来自哪个素材。\n2. **归纳共性**：多个素材重复出现的结构（如「登录」「订单」「个人中心」）合并为一个节点；只在单个素材出现的，标为待确认。\n3. 输出结构：根节点=产品名；一级=模块（按业务能力划分，不按页面）；二级=业务/子模块；三级=功能或需求。节点命名 ≤12 字，动词或名词短语。\n4. 用工具落库，唯一交付方式：对每个节点调用一次 workbench_map_node_publish，参数 { productId:"${product.id}", mapId:"${productMapSelected}", parentId:"父节点 id（根为空）", name:"节点名", kind:"module|business|feature|requirement", platform:"pc|mobile|tablet|all" }；**不要**用 write/edit 直接改文件，也不要新建导图（导图已创建好）。\n5. 全部写完调用 product_progress_publish 汇报（kind:"notes", status:"running"→"done"）。\n6. 完成后汇总：用了几个素材、提炼出多少节点、哪些是「单素材孤证」需人工确认。\n\n注意：本次请只输出导图结构，不要写设计文档。`
+    return `产品导图提炼任务：${product.name}\n\n你是资深产品经理 + 竞品分析师。请根据下面这些素材，提炼出一张**产品思维导图**（产品 → 模块 → 业务 → 功能 / 需求）。\n\n产品：${product.name}\n简介：${product.description || '未填写'}\n产品 ID：${product.id}\n工作区：${product.workspacePath}\n本次新建导图名称：${name}\n${note === '' ? '' : `关注点：${note}\n`}\n【素材】\n${lines}\n\n要求：\n1. 先逐个读取素材：截图读图、链接抓正文；把每个素材里出现的页面/板块/功能列成清单，并标注来自哪个素材。\n2. **归纳共性**：多个素材重复出现的结构（如「登录」「订单」「个人中心」）合并为一个节点；只在单个素材出现的，标为待确认。\n3. 输出结构：根节点=产品名；一级=模块（按业务能力划分，不按页面）；二级=业务/子模块；三级=功能或需求。节点命名 ≤12 字，动词或名词短语。\n4. 用工具落库，唯一交付方式：对每个节点调用一次 workbench_map_node_publish，参数 { productId:"${product.id}", mapId:"${productMapSelected}", parentId:"父节点 id（根为空）", name:"节点名", kind:"module|business|feature|requirement", platform:"pc|dsh|mobile|tablet|all" }；**不要**用 write/edit 直接改文件，也不要新建导图（导图已创建好）。\n5. 全部写完调用 product_progress_publish 汇报（kind:"notes", status:"running"→"done"）。\n6. 完成后汇总：用了几个素材、提炼出多少节点、哪些是「单素材孤证」需人工确认。\n\n注意：本次请只输出导图结构，不要写设计文档。`
   }
 
   /** 保存导图时：把素材落库（截图已落盘，url 追加），并派发提炼任务。 */
@@ -5416,7 +5616,7 @@ ${common}
         ${(['module','business','feature','requirement'] as const).map(k => `<option value="${k}" ${(mod?.kind ?? 'module') === k ? 'selected' : ''}>${moduleKindName(k)}</option>`).join('')}
       </select></div>
       <div class="mfield"><label>端</label><select id="wb-mod-platform">
-        ${(['all','pc','mobile','tablet'] as const).map(pl => `<option value="${pl}" ${(mod?.platform ?? 'all') === pl ? 'selected' : ''}>${platformLabel(pl)}</option>`).join('')}
+        ${(['all','pc','dsh','mobile','tablet'] as const).map(pl => `<option value="${pl}" ${(mod?.platform ?? 'all') === pl ? 'selected' : ''}>${platformLabel(pl)}</option>`).join('')}
       </select></div>
       <div class="mfield"><label>上级模块（可选）</label><select id="wb-mod-parent">
         <option value="">无（顶层）</option>
@@ -5550,7 +5750,7 @@ ${common}
       return `【阶段 1／业务模块设计文档】${product.name}\n\n你是资深产品经理 + 业务架构师。先写设计文档，不要急着建模块。\n\n${base}\n\n已有文档：\n${docList}\n\n要求：\n1. 针对每张导图里的每个**分组节点**（kind=module 或 business；没有分组时按功能聚类自行归纳）写一份业务模块设计文档。\n2. 每份用 workbench_product_note_publish 写入，参数：{ productId:"${product.id}"${mapArg}, kind:"module_design", moduleId:"<若该模块已存在则填其 id，否则留空>", title:"<模块名> · 业务模块设计", content:"完整 Markdown", tags:["模块设计"] }。\n3. 文档结构：模块背景 / 业务目标与指标 / 角色与权限 / 核心流程（含异常分支）/ 数据与字段 / 与其他模块的边界与依赖 / 多端差异（PC·移动·平板）/ 非功能要求 / 验收标准。\n4. **只依据导图里的事实**；导图没写的，明确标注「待确认」而不是编造。\n5. ${opts.incremental ? '增量模式：只处理内容有变化的模块（导图节点改动过、或尚无文档），已一致的跳过。' : '全量模式：覆盖全部模块。'}\n6. 每写完一份调用 product_progress_publish 上报（kind:"modules"）。\n7. 最后用清单汇报写了哪几份。`
     }
     if (stage === 'extract_module') {
-      return `【阶段 2／从设计文档提炼模块】${product.name}\n\n你是业务架构师。请**从已写好的业务模块设计文档中反推产品结构**，而不是重新从导图想。\n\n${base}\n\n可用的设计文档：\n${docList}\n\n要求：\n1. 先逐份读完上面的设计文档（title 与 noteId 见上），提炼出「产品 → 模块 → 业务 → 功能/需求」的层级。\n2. 用 workbench_module_publish 写入，参数 { productId:"${product.id}"${mapArg}, parentId:"父级模块 id（顶层留空）", nodeId:"对应导图节点 id（能从文档/导图对上就填）", name, kind:"module|business|feature|requirement", platform:"pc|mobile|tablet|all", description:"一句话职责" }。\n3. **同名同 kind 是更新而非新增**（宿主幂等），放心重跑。\n4. 模块划分以**文档里描述的业务能力**为准；导图与文档冲突时，**以导图为事实基准**，并在模块 description 里注明冲突点。\n5. 不要新建空模块；每个模块必须能对应到至少一份设计文档或一个导图节点。\n6. 完成后汇报：新建 N 个、更新 M 个、导图与文档不一致 K 处。`
+      return `【阶段 2／从设计文档提炼模块】${product.name}\n\n你是业务架构师。请**从已写好的业务模块设计文档中反推产品结构**，而不是重新从导图想。\n\n${base}\n\n可用的设计文档：\n${docList}\n\n要求：\n1. 先逐份读完上面的设计文档（title 与 noteId 见上），提炼出「产品 → 模块 → 业务 → 功能/需求」的层级。\n2. 用 workbench_module_publish 写入，参数 { productId:"${product.id}"${mapArg}, parentId:"父级模块 id（顶层留空）", nodeId:"对应导图节点 id（能从文档/导图对上就填）", name, kind:"module|business|feature|requirement", platform:"pc|dsh|mobile|tablet|all", description:"一句话职责" }。\n3. **同名同 kind 是更新而非新增**（宿主幂等），放心重跑。\n4. 模块划分以**文档里描述的业务能力**为准；导图与文档冲突时，**以导图为事实基准**，并在模块 description 里注明冲突点。\n5. 不要新建空模块；每个模块必须能对应到至少一份设计文档或一个导图节点。\n6. 完成后汇报：新建 N 个、更新 M 个、导图与文档不一致 K 处。`
     }
     if (stage === 'product_doc') {
       const moduleCount = productModules.filter(m => m.productId === product.id && (m.kind === 'module' || m.kind === 'business')).length
@@ -5624,7 +5824,7 @@ ${docList}
    { projectId:"<测试项目 id>", planId, title:"<页面> · <角色> · <场景>（≤60 字）", precondition, steps:[3–8 步],
      expected:"可验证的预期", priority:"P0|P1|P2|P3", type:"functional|boundary|exception|permission|regression",
      role:"<文档里的角色>", uiDesignId, demoId, pageId:"<文档里提到的 page-xxx>", blockId:"<可选>",
-     platform:"pc|mobile|tablet|all", designVersion:"<当前 UI 设计/DEMO 版本>" }
+     platform:"pc|dsh|mobile|tablet|all", designVersion:"<当前 UI 设计/DEMO 版本>" }
 3. 每条用例必须有真实 pageId；步骤要具体到「点哪个按钮 / 填什么值」；expected 必须可验证。
 4. 异常与边界用例至少占 20%。
 5. 完成后调用 workbench_test_result_publish 不需要；只汇报写了多少条、覆盖了哪些页面。`
@@ -6740,8 +6940,8 @@ ${mapLine}
   }
 
   /* ---------- 测试 ---------- */
-  const PLATFORMS = ['all', 'pc', 'mobile', 'tablet'] as const
-  function platformLabel(value: string): string { return value === 'pc' ? 'PC' : value === 'mobile' ? '移动' : value === 'tablet' ? '平板' : '全部' }
+  const PLATFORMS = ['all', 'pc', 'dsh', 'mobile', 'tablet'] as const
+  function platformLabel(value: string): string { return value === 'pc' ? 'PC' : value === 'dsh' ? 'DSH' : value === 'mobile' ? '移动' : value === 'tablet' ? '平板' : '全部' }
   function testProjectOf(id: string | null | undefined): TestProject | undefined { return testProjects.find(p => p.id === id) }
   function testCasesOf(project: TestProject | undefined): TestCase[] { return project ? testCases.filter(c => c.projectId === project.id) : [] }
   function testRunsOf(project: TestProject | undefined): TestRun[] {
@@ -6873,7 +7073,7 @@ ${context ? `\n【产品上下文】\n${context.slice(0, 30_000)}` : ''}
 ${existingTitles ? `\n【已有用例（勿重复生成同名/同覆盖用例）】\n${existingTitles}` : ''}
 
 【要求】
-1. 每条用例调用一次工具 workbench_testcase_publish，参数：{ projectId:"${project.id}", title, precondition, steps:["..."], expected, priority:"P0|P1|P2|P3", type:"functional|boundary|exception|permission|regression", source:"${source}", moduleId:"模块 id（尽量填写，便于模块覆盖统计）", platform:"pc|mobile|tablet|all" }。
+1. 每条用例调用一次工具 workbench_testcase_publish，参数：{ projectId:"${project.id}", title, precondition, steps:["..."], expected, priority:"P0|P1|P2|P3", type:"functional|boundary|exception|permission|regression", source:"${source}", moduleId:"模块 id（尽量填写，便于模块覆盖统计）", platform:"pc|dsh|mobile|tablet|all" }。
 2. 覆盖正例、反例、边界、异常、权限/幂等（按需）；用例步骤要可执行、预期要可判定；标题与上面已有用例不重复。
 3. 尽量带上 moduleId / platform，便于按模块和端统计覆盖。
 4. 不要只回复用例正文；不要用 write/edit 写文件；唯一交付方式是调用工具。
@@ -7958,13 +8158,14 @@ ${lines}`
 
   /* ---------- toast ---------- */
   let toastTimer = 0
-  function toast(message: string): void {
+  /** ms 可调：采集结果这类多段信息（新增/重复/失败源）1.7 秒读不完。 */
+  function toast(message: string, ms = 1700): void {
     const el = $id('wb-toast')
     if (!el) return
     el.textContent = message
     el.classList.add('show')
     if (toastTimer !== 0) window.clearTimeout(toastTimer)
-    toastTimer = window.setTimeout(() => el.classList.remove('show'), 1700)
+    toastTimer = window.setTimeout(() => el.classList.remove('show'), Math.max(1200, ms))
   }
 
   /* ---------- 事件 ---------- */
@@ -8443,6 +8644,8 @@ ${lines}`
       if (act === 'news-toggle') { void toggleNewsTopic(id); return }
       if (act === 'news-delete') { void deleteNewsTopic(id); return }
       if (act === 'news-refresh') { void loadNews(); return }
+      if (act === 'news-translate-one') { void translateNewsItems([id]); return }
+      if (act === 'news-translate-all') { void translateNewsItems([]); return }
       if (act === 'news-filter') {
         ui.newsTopicFilter = actEl.getAttribute('data-topic') ?? 'all'
         renderContent()

@@ -495,7 +495,7 @@ h1.page-title{font-size:29px;line-height:1.18;margin:0;font-weight:700;letter-sp
 .nt-actions{display:flex;align-items:center;gap:4px;border-top:1px solid var(--line);margin-top:6px;padding-top:7px}
 .nt-actions .btn{height:24px;padding:0 8px;font-size:10.5px;gap:4px}
 .nt-actions .icon-btn{width:24px;height:24px}
-.news-feed-head{display:flex;align-items:baseline;justify-content:space-between;margin:4px 0 8px}
+.news-feed-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 0 8px}
 .news-feed-head b{font-size:13px;font-weight:650}
 .news-filters{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px}
 .news-list{display:flex;flex-direction:column;gap:8px}
@@ -505,6 +505,16 @@ h1.page-title{font-size:29px;line-height:1.18;margin:0;font-weight:700;letter-sp
 .ni-title{display:flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;line-height:1.45;color:var(--text);text-decoration:none}
 .ni-title svg{flex:0 0 auto;opacity:.55}
 .ni-title:hover{color:var(--accent-ink)}
+/* 机翻中文标题下面的原文小字：机翻会把专名翻坏（实测 RE:Dox → 「回复：DOX」），
+   原文必须一直可见，用户才能判断这条到底在说什么。 */
+.ni-title-src{font-size:11px;line-height:1.4;color:var(--text-3);margin-top:1px;word-break:break-word}
+/* 原文摘要：中文译文在上、原文在下，同样是「中文为主、原文常显」。 */
+.ni-ai-src{font-size:11px;line-height:1.5;color:var(--text-3);margin:4px 0 0;padding-top:4px;border-top:1px dashed var(--line);word-break:break-word}
+/* 单条翻译按钮：贴在标题下面一行，轻量不抢视觉。 */
+.ni-tr{display:inline-flex;align-items:center;gap:3px;margin-top:3px;padding:1px 7px;height:19px;font-size:11px;color:var(--text-3);background:transparent;border:1px solid var(--line);border-radius:999px;cursor:pointer;transition:color .15s,border-color .15s}
+.ni-tr:hover{color:var(--accent-ink);border-color:var(--accent-ink)}
+/* 顶部批量按钮：右对齐，与「N 条」计数拉开。 */
+.ni-tr-all{margin-left:auto;height:24px;font-size:12px;display:inline-flex;align-items:center;gap:4px}
 .news-item p{margin:4px 0 0;font-size:11px;line-height:1.55;color:var(--text-2)}
 .news-empty{display:flex;flex-direction:column;align-items:center;gap:7px;text-align:center;border:1px dashed var(--line);border-radius:12px;padding:30px 18px;background:var(--panel-2);color:var(--text-3);font-size:11px;line-height:1.6}
 .news-empty b{font-size:13px;color:var(--text)}
