@@ -16,11 +16,11 @@
 
 export type ProductNodeKind = 'root' | 'module' | 'business' | 'feature' | 'requirement'
 export type ProductNodeStatus = 'kept' | 'dropped' | 'pending'
-export type ProductPlatform = 'pc' | 'mobile' | 'tablet' | 'all'
+export type ProductPlatform = 'pc' | 'dsh' | 'mobile' | 'tablet' | 'all'
 export type ProductEdgeKind = 'tree' | 'relate'
 
 export const PRODUCT_NODE_KINDS: ProductNodeKind[] = ['root', 'module', 'business', 'feature', 'requirement']
-export const PRODUCT_PLATFORMS: ProductPlatform[] = ['pc', 'mobile', 'tablet', 'all']
+export const PRODUCT_PLATFORMS: ProductPlatform[] = ['pc', 'dsh', 'mobile', 'tablet', 'all']
 
 export interface ProductMapNode {
   id: string

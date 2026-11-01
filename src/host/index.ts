@@ -2205,7 +2205,7 @@ CREATE TABLE IF NOT EXISTS products (
     const name = str(input?.name).trim().slice(0, 24)
     if (name === '') throw new Error('节点名称不能为空')
     const kind = (['module', 'business', 'feature', 'requirement'].includes(str(input?.kind)) ? str(input.kind) : 'feature') as ProductMapNode['kind']
-    const platform = ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input.platform) as NonNullable<ProductMapNode['platform']> : undefined
+    const platform = ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input.platform) as NonNullable<ProductMapNode['platform']> : undefined
     const parentId = str(input?.parentId)
     const graph = mapGraphOf(row)
     const existing = graph.nodes.find(n => n.label === name && n.kind === kind
@@ -2428,7 +2428,7 @@ CREATE TABLE IF NOT EXISTS products (
     const style = str(input?.style).replace(/[^a-z0-9-]/gi, '').slice(0, 24) || 'clean'
     const scope = str(input?.scope) === 'feature' ? 'feature' : 'all'
     const featureId = scope === 'feature' ? str(input?.featureId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 60) : ''
-    const platform = ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all'
+    const platform = ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all'
     const kind = str(input?.kind) === 'system' ? 'system' : 'page'
     const html = str(input?.html)
     if (html.trim() === '') throw new Error('Demo HTML 为空')
@@ -2877,7 +2877,7 @@ CREATE TABLE IF NOT EXISTS products (
     if (this.db.prepare('SELECT id FROM themes WHERE id = ?').get(themeId) === undefined) throw new Error('主题不存在')
     const uiDesignId = str(input?.uiDesignId) || (existing !== undefined ? String(existing.ui_design_id) : '')
     if (uiDesignId !== '' && this.db.prepare('SELECT id FROM ui_designs WHERE id = ?').get(uiDesignId) === undefined) throw new Error('UI 设计不存在')
-    const platform = ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input.platform) : 'all'
+    const platform = ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input.platform) : 'all'
     const scope = str(input?.scope) === 'page' ? 'page' : 'all'
     const kind = str(input?.kind) === 'system' ? 'system' : 'page'
     const productId = str(input?.productId) || (existing !== undefined ? String(existing.product_id) : '')
@@ -3042,7 +3042,7 @@ CREATE TABLE IF NOT EXISTS products (
       if (blocks.length === 0) return { ok: false, error: `页面 ${id} 至少要有 1 个区块` }
       out.push({
         id, name: str(p.name).trim().slice(0, 60) || id, route,
-        platform: ['pc', 'mobile', 'tablet', 'all'].includes(str(p.platform)) ? str(p.platform) : 'all',
+        platform: ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(p.platform)) ? str(p.platform) : 'all',
         goal: str(p.goal).slice(0, 500), blocks,
         states: asArray(p.states).map(s => str(s).slice(0, 60)).filter(Boolean).slice(0, 20),
         interactions: asArray(p.interactions).map(s => str(s).slice(0, 120)).filter(Boolean).slice(0, 20),
@@ -3094,7 +3094,7 @@ CREATE TABLE IF NOT EXISTS products (
     const docKey = str(input?.docKey) || `ui:${projectId}:${mapId || 'self'}`
     const themeId = str(input?.themeId)
     if (themeId !== '' && this.db.prepare('SELECT id FROM themes WHERE id = ?').get(themeId) === undefined) throw new Error('主题不存在')
-    const platform = ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input.platform) : 'all'
+    const platform = ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input.platform) : 'all'
     const status = ['draft', 'ready'].includes(str(input?.status)) ? str(input.status) : (existing?.status ?? 'draft')
     const productId = str(input?.productId)
     const pagesJson = JSON.stringify(checked.value)
@@ -3207,7 +3207,7 @@ CREATE TABLE IF NOT EXISTS products (
     const checked = this.validateThemeTokens(tokensRaw)
     if (!checked.ok) throw new Error(checked.error ?? '主题令牌非法')
     const existing = this.db.prepare('SELECT * FROM themes WHERE id = ?').get(id) as any
-    const platform = ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input.platform) : 'all'
+    const platform = ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input.platform) : 'all'
     const source = ['builtin', 'text', 'image', 'url', 'mixed', 'manual'].includes(str(input?.source)) ? str(input.source) : 'manual'
     const spec = str(input?.spec).slice(0, 20_000)
     const hint = str(input?.hint).slice(0, 200)
@@ -3273,7 +3273,7 @@ CREATE TABLE IF NOT EXISTS products (
     const name = str(input?.name).trim().slice(0, 120)
     if (name === '') throw new Error('模块名称不能为空')
     const kind = ['module', 'business', 'feature', 'requirement'].includes(str(input?.kind)) ? str(input?.kind) : 'module'
-    const platform = ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all'
+    const platform = ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all'
     const mapId = str(input?.mapId) || this.defaultMapId(productId)
     // 幂等：未显式给 id 时按 (product_id, map_id, name, kind) upsert，AI 重跑不产生重复模块；同名模块可分属不同导图
     let id = str(input?.id)
@@ -3359,7 +3359,7 @@ CREATE TABLE IF NOT EXISTS products (
     }
     const fields = {
       name, description: input?.description !== undefined ? str(input?.description).slice(0, 5000) : (existing?.description ?? ''), workspacePath,
-      productId: str(input?.productId), moduleId: str(input?.moduleId), platform: ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all', bugProjectId,
+      productId: str(input?.productId), moduleId: str(input?.moduleId), platform: ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all', bugProjectId,
       deployMode: input?.deployMode !== undefined ? (str(input?.deployMode) === 'ssh' ? 'ssh' : 'local') : (existing?.deploy_mode ?? 'local'),
       sshHost: input?.sshHost !== undefined ? str(input?.sshHost) : (existing?.ssh_host ?? ''),
       remoteDir: input?.remoteDir !== undefined ? str(input?.remoteDir) : (existing?.remote_dir ?? ''),
@@ -3421,7 +3421,7 @@ CREATE TABLE IF NOT EXISTS products (
     }
     const existing = this.db.prepare('SELECT id, created_at FROM test_cases WHERE id = ?').get(id) as any
     const priority = ['P0', 'P1', 'P2', 'P3'].includes(str(input?.priority)) ? str(input?.priority) : 'P2'
-    const platform = ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input.platform) : 'all'
+    const platform = ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input.platform) : 'all'
     /* 1.14 新增字段（T2 追溯链 / T9 计划 / T10 回归） */
     const planId = str(input?.planId)
     const uiDesignId = str(input?.uiDesignId)
@@ -3567,7 +3567,7 @@ CREATE TABLE IF NOT EXISTS products (
     const verification = str(input?.verification).slice(0, 20_000)
     const aiThreadId = str(input?.aiThreadId)
     const moduleId = str(input?.moduleId)
-    const platform = ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all'
+    const platform = ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all'
     const assignee = str(input?.assignee).trim().slice(0, 40) || '我'
     const code = str(input?.code) || existing?.code || `BUG-${randomUUID().slice(0, 4).toUpperCase()}`
     const resolvedAt = status === 'resolved' ? (existing?.resolved_at || now) : null
@@ -4192,7 +4192,7 @@ class JsonStore {
     const style = str(input?.style).replace(/[^a-z0-9-]/gi, '').slice(0, 24) || 'clean'
     const scope = str(input?.scope) === 'feature' ? 'feature' : 'all'
     const featureId = scope === 'feature' ? str(input?.featureId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 60) : ''
-    const platform = ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all'
+    const platform = ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all'
     const kind = str(input?.kind) === 'system' ? 'system' : 'page'
     const html = str(input?.html)
     if (html.trim() === '') throw new Error('Demo HTML 为空')
@@ -4269,7 +4269,7 @@ class JsonStore {
     const name = str(input?.name).trim().slice(0, 120)
     if (name === '') throw new Error('模块名称不能为空')
     const kind = ['module', 'business', 'feature', 'requirement'].includes(str(input?.kind)) ? str(input?.kind) : 'module'
-    const platform = ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all'
+    const platform = ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all'
     const mapId = str(input?.mapId) || this.defaultMapId(productId)
     // 幂等：未显式给 id 时按 (productId, mapId, name, kind) upsert；同名模块可分属不同导图
     let id = str(input?.id)
@@ -4481,7 +4481,7 @@ class JsonStore {
     if (bugProjectId === '') bugProjectId = this.saveBugProject({ name: `测试：${name}`, workspacePath }).id
     const project = {
       id, name, description: str(input?.description).slice(0, 5000), workspacePath,
-      productId: str(input?.productId), moduleId: str(input?.moduleId), platform: ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all', bugProjectId,
+      productId: str(input?.productId), moduleId: str(input?.moduleId), platform: ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all', bugProjectId,
       deployMode: input?.deployMode !== undefined ? (str(input?.deployMode) === 'ssh' ? 'ssh' : 'local') : (existing?.deployMode ?? 'local'),
       sshHost: input?.sshHost !== undefined ? str(input?.sshHost) : (existing?.sshHost ?? ''),
       remoteDir: input?.remoteDir !== undefined ? str(input?.remoteDir) : (existing?.remoteDir ?? ''),
@@ -4526,7 +4526,7 @@ class JsonStore {
       id, projectId, title, precondition: str(input?.precondition), steps, expected: str(input?.expected),
       priority: ['P0', 'P1', 'P2', 'P3'].includes(str(input?.priority)) ? str(input?.priority) : 'P2',
       type: str(input?.type) || 'functional', source: str(input?.source) || 'manual',
-      moduleId: str(input?.moduleId), platform: ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all',
+      moduleId: str(input?.moduleId), platform: ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all',
       createdAt: existing?.createdAt ?? now, updatedAt: now,
     }
     if (existing) Object.assign(existing, testCase)
@@ -4638,7 +4638,7 @@ class JsonStore {
       verification: str(input?.verification).slice(0, 20_000),
       aiThreadId: str(input?.aiThreadId),
       moduleId: str(input?.moduleId),
-      platform: ['pc', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all',
+      platform: ['pc', 'dsh', 'mobile', 'tablet', 'all'].includes(str(input?.platform)) ? str(input?.platform) : 'all',
       assignee: str(input?.assignee).trim().slice(0, 40) || '我',
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
@@ -5578,7 +5578,7 @@ function registerModuleTool(ctx: any, store: SqliteStore | JsonStore): void {
         nodeId: { type: 'string', description: '对应的导图节点 id（可选，便于导图与模块互相跳转）' },
         name: { type: 'string' },
         kind: { type: 'string', enum: ['module', 'business', 'feature', 'requirement'] },
-        platform: { type: 'string', enum: ['pc', 'mobile', 'tablet', 'all'] },
+        platform: { type: 'string', enum: ['pc', 'dsh', 'mobile', 'tablet', 'all'] },
         description: { type: 'string' }, noteId: { type: 'string' }, status: { type: 'string' },
       },
       required: ['productId', 'name', 'kind'],
@@ -5631,7 +5631,7 @@ function registerModuleTool(ctx: any, store: SqliteStore | JsonStore): void {
         parentId: { type: 'string', description: '父节点 id；根节点留空' },
         name: { type: 'string', description: '节点名称（≤12 字）' },
         kind: { type: 'string', enum: ['module', 'business', 'feature', 'requirement'] },
-        platform: { type: 'string', enum: ['pc', 'mobile', 'tablet', 'all'] },
+        platform: { type: 'string', enum: ['pc', 'dsh', 'mobile', 'tablet', 'all'] },
         detail: { type: 'string', description: '一句话说明（可选，≤200 字）' },
       },
       required: ['productId', 'mapId', 'name', 'kind'],
@@ -5660,7 +5660,7 @@ function registerModuleTool(ctx: any, store: SqliteStore | JsonStore): void {
         mapId: { type: 'string' },
         name: { type: 'string' },
         themeId: { type: 'string' },
-        platform: { type: 'string', enum: ['pc', 'mobile', 'tablet', 'all'] },
+        platform: { type: 'string', enum: ['pc', 'dsh', 'mobile', 'tablet', 'all'] },
         spec: { type: 'string', description: '设计规范 Markdown（6 节结构）' },
         pages: {
           type: 'array',
@@ -5715,7 +5715,7 @@ function registerModuleTool(ctx: any, store: SqliteStore | JsonStore): void {
         id: { type: 'string', description: '主题 id（小写字母数字与 -）' },
         name: { type: 'string' },
         hint: { type: 'string' },
-        platform: { type: 'string', enum: ['pc', 'mobile', 'tablet', 'all'] },
+        platform: { type: 'string', enum: ['pc', 'dsh', 'mobile', 'tablet', 'all'] },
         spec: { type: 'string', description: '设计规范 Markdown（6 节）' },
         tokens: { type: 'object', additionalProperties: true, description: '渲染令牌' },
         source: { type: 'string', enum: ['text', 'image', 'url', 'mixed', 'manual'] },
@@ -5752,7 +5752,7 @@ function registerTestCaseTool(ctx: any, store: SqliteStore | JsonStore): void {
         precondition: { type: 'string' }, steps: { type: 'array', items: { type: 'string' } },
         expected: { type: 'string' }, priority: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] },
         type: { type: 'string' }, source: { type: 'string' },
-        moduleId: { type: 'string' }, platform: { type: 'string', enum: ['pc', 'mobile', 'tablet', 'all'] },
+        moduleId: { type: 'string' }, platform: { type: 'string', enum: ['pc', 'dsh', 'mobile', 'tablet', 'all'] },
         /* 1.14 T2/T9：追溯链（页面+区块）、角色、计划、基线版本 */
         planId: { type: 'string', description: '所属测试计划 id' },
         uiDesignId: { type: 'string' }, demoId: { type: 'string' },
@@ -5784,7 +5784,7 @@ function registerTestCaseTool(ctx: any, store: SqliteStore | JsonStore): void {
         planId: { type: 'string', description: '测试计划 id（可先建计划再写）' },
         name: { type: 'string', description: '文档标题' },
         productId: { type: 'string' }, uiDesignId: { type: 'string' }, demoId: { type: 'string' },
-        platform: { type: 'string', enum: ['pc', 'mobile', 'tablet', 'all'] },
+        platform: { type: 'string', enum: ['pc', 'dsh', 'mobile', 'tablet', 'all'] },
         content: { type: 'string', description: 'Markdown 测试设计文档（6 节结构，按角色分组）' },
       },
       required: ['projectId', 'name', 'content'],
@@ -5882,7 +5882,7 @@ function registerTestFlowTools(ctx: any, store: SqliteStore | JsonStore): void {
         description: { type: 'string' },
         severity: { type: 'string', enum: ['blocker', 'major', 'minor', 'trivial'] },
         priority: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] },
-        platform: { type: 'string', enum: ['pc', 'mobile', 'tablet', 'all'] },
+        platform: { type: 'string', enum: ['pc', 'dsh', 'mobile', 'tablet', 'all'] },
         moduleId: { type: 'string' },
         tags: { type: 'array', items: { type: 'string' } },
       },
@@ -5999,7 +5999,7 @@ function registerProductTools(ctx: any, store: SqliteStore | JsonStore): void {
         mapId: { type: 'string', description: '导图 id（不传则归到该产品第一张导图）。' },
         featureId: { type: 'string', description: '导图节点 id（功能/需求）。' },
         moduleId: { type: 'string', description: '模块/业务节点 id。' },
-        platform: { type: 'string', enum: ['pc', 'mobile', 'tablet', 'all'], description: '端。' },
+        platform: { type: 'string', enum: ['pc', 'dsh', 'mobile', 'tablet', 'all'], description: '端。' },
         title: { type: 'string', description: '笔记标题。' },
         content: { type: 'string', description: '完整设计笔记 Markdown（背景/目标/用户故事/流程/交互/边界/验收）。' },
         tags: { type: 'array', items: { type: 'string' }, description: '可选标签。' },
