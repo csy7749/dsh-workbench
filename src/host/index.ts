@@ -191,6 +191,10 @@ CREATE TABLE IF NOT EXISTS news_topics (
   cron_task_ids TEXT NOT NULL DEFAULT '[]',
   enabled INTEGER NOT NULL DEFAULT 1,
   count INTEGER NOT NULL DEFAULT 6,
+  sources TEXT NOT NULL DEFAULT '[]',
+  kinds TEXT NOT NULL DEFAULT '[]',
+  per_source_limit INTEGER NOT NULL DEFAULT 0,
+  source_health TEXT NOT NULL DEFAULT '{}',
   last_run_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -493,6 +497,15 @@ class SqliteStore {
   /** 旧库升级：补 news_topics.count / news_items.ai_summary 两列。 */
   private migrateNews(): void {    const columns = (table: string): string[] => (this.db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map(c => String(c.name))
     if (!columns('news_topics').includes('count')) this.db.exec('ALTER TABLE news_topics ADD COLUMN count INTEGER NOT NULL DEFAULT 6')
+    /* 订阅模型扩字段（2026-11-01）：一个订阅自己决定「用哪些源、要哪些内容类型、每源几条」，
+       并把每源最近一次的采集结果记下来（source_health），这样卡片能直接说清「哪个源挂了」。
+       sources / kinds 用 JSON 数组存，空数组 = 不限制（用全部源 / 全部类型）；
+       per_source_limit = 0 表示沿用 count。旧字段 query / count 全部保留，不迁移、不弃用。 */
+    if (!columns('news_topics').includes('sources')) this.db.exec("ALTER TABLE news_topics ADD COLUMN sources TEXT NOT NULL DEFAULT '[]'")
+    if (!columns('news_topics').includes('kinds')) this.db.exec("ALTER TABLE news_topics ADD COLUMN kinds TEXT NOT NULL DEFAULT '[]'")
+    if (!columns('news_topics').includes('per_source_limit')) this.db.exec('ALTER TABLE news_topics ADD COLUMN per_source_limit INTEGER NOT NULL DEFAULT 0')
+    if (!columns('news_topics').includes('source_health')) this.db.exec("ALTER TABLE news_topics ADD COLUMN source_health TEXT NOT NULL DEFAULT '{}'")
+    this.migrateNewsKinds()
     if (!columns('news_items').includes('ai_summary')) this.db.exec("ALTER TABLE news_items ADD COLUMN ai_summary TEXT NOT NULL DEFAULT ''")
     /* 结构化来源与类型：source 是给人看的「站点 · 类型」文本，这两列是给筛选/统计用的枚举。
        source_key：official | github | community | media（自由文本兜底为空串）
@@ -533,6 +546,52 @@ class SqliteStore {
   }
 
   /**
+   * kind 口径迁移：旧 12 类 → 雷达的 7 类（2026-11-01）。
+   * 幂等：只 UPDATE 旧值与词表外的值，跑第二遍没有任何行命中。
+   * 真要改数据时先 VACUUM INTO 备份一份（路径带时间戳，落在同一个 .dsh 目录）；
+   * 没有行需要改就不备份——每次启动都拷一遍库没有意义。
+   */
+  private migrateNewsKinds(): void {
+    const known = ['release', 'oss-launch', 'tutorial', 'deep-dive', 'paper', 'tool-update', 'other']
+    const holes = known.map(() => '?').join(',')
+    const pending = Number((this.db.prepare(`SELECT COUNT(*) AS n FROM news_items WHERE kind NOT IN (${holes})`).get(...known) as any)?.n ?? 0)
+    if (pending === 0) return
+    try {
+      const backup = join(dirname(this.file), `dsh-workbench.backup-before-kind-migration-${Date.now()}.sqlite`)
+      this.db.exec(`VACUUM INTO '${backup.replace(/'/g, "''")}'`)
+      console.log(`[dsh-workbench] kind 迁移前已备份：${backup}`)
+    } catch (cause) {
+      // 备份失败就不动数据：宁可这次不迁，也不能在没有退路的情况下批量改库
+      console.warn('[dsh-workbench] kind 迁移备份失败，跳过迁移（下次启动再试）：', cause)
+      return
+    }
+    const legacy: Array<[string, string[]]> = [
+      ['release', ['update', 'announcement']],
+      ['oss-launch', ['oss']],
+      ['tool-update', ['tool']],
+      ['deep-dive', ['review']],
+      ['other', ['dlc', 'dev', 'community', 'data', 'peripheral', '']],
+    ]
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const upd = this.db.prepare('UPDATE news_items SET kind = ? WHERE kind = ?')
+      for (const [next, values] of legacy) {
+        for (const value of values) {
+          if (value === next) continue
+          upd.run(next, value)
+        }
+      }
+      // 兜底：词表外的任何值一律 other，库里不出现第二套口径
+      this.db.exec(`UPDATE news_items SET kind = 'other' WHERE kind NOT IN (${known.map((k) => `'${k}'`).join(',')})`)
+      this.db.exec('COMMIT')
+      console.log(`[dsh-workbench] kind 迁移完成：${pending} 条旧值归入 7 类口径`)
+    } catch (cause) {
+      this.db.exec('ROLLBACK')
+      console.warn('[dsh-workbench] kind 迁移失败（已回滚）：', cause)
+    }
+  }
+
+  /**
    * 老新闻条目补 source_key / kind。
    * 这两列是后加的，上线前入库的条目两个字段都是空串，前端胶囊会缺一块、来源覆盖统计也失真。
    * 只按文本做保守反推（宁缺勿错）：source 里站点名可判定来源类别，标题里出现强特征词才判类型。
@@ -544,15 +603,14 @@ class SqliteStore {
       ['official', /官方|官微|公告|steam|官网|发行商|开发商|blog|博客|fangamer|nintendo|playstation/i],
       ['community', /b站|bilibili|知乎|nga|贴吧|reddit|小黑盒|微博|up主|社区|论坛|discord|youtube/i],
     ]
+    /* 2026-11-01 kind 迁移到雷达的 7 类：反推也按新口径，兜底一律 other（不再留空串） */
     const kindRules: Array<[string, RegExp]> = [
-      ['dlc', /\bdlc\b|资料片|资料片/i],
-      ['update', /补丁|更新日志|版本更新|patch|hotfix|\d+\.\d+\.\d+/i],
-      ['announcement', /公告|发售|上线|开放预购|定档|声明|直面会/i],
-      ['review', /评测|评分|测评|review/i],
-      ['data', /销量|在线人数|峰值|榜单|流水/i],
-      ['peripheral', /周边|联动|珍玩|手办|音乐会/i],
-      ['community', /热议|争议|回应|致歉|吐槽/i],
-      ['dev', /访谈|开发进展|专访|幕后/i],
+      ['paper', /论文|arxiv|\bpaper\b/i],
+      ['tutorial', /教程|tutorial|how ?to|入门|指南|实战/i],
+      ['deep-dive', /原理|源码分析|剖析|深度解析|deep ?dive|architecture|架构/i],
+      ['oss-launch', /开源|open ?source|首发|new repo/i],
+      ['tool-update', /插件|plugin|addon|工具|\bsdk\b|扩展|编辑器/i],
+      ['release', /补丁|更新日志|版本更新|发布|patch|hotfix|release|\d+\.\d+/i],
     ]
     const pick = (text: string, rules: Array<[string, RegExp]>, fallback: string): string => {
       for (const [value, re] of rules) if (re.test(text)) return value
@@ -566,7 +624,7 @@ class SqliteStore {
       let filled = 0
       for (const row of rows) {
         const sourceKey = String(row.source_key ?? '') || pick(String(row.source ?? ''), sourceRules, 'media')
-        const kind = String(row.kind ?? '') || pick(String(row.title ?? ''), kindRules, '')
+        const kind = String(row.kind ?? '') || pick(String(row.title ?? ''), kindRules, 'other')
         if (sourceKey === row.source_key && kind === row.kind) continue
         upd.run(sourceKey, kind, row.id)
         filled += 1
@@ -876,17 +934,39 @@ class SqliteStore {
     const cronTaskIds = list(input?.cronTaskIds).map(x => str(x)).filter(Boolean)
     const enabled = input?.enabled === false ? 0 : 1
     const count = Math.max(1, Math.min(20, Math.round(num(input?.count, 6))))
-    const existing = this.db.prepare('SELECT id, created_at FROM news_topics WHERE id = ?').get(id) as any
+    const existing = this.db.prepare('SELECT id, created_at, sources, kinds, per_source_limit FROM news_topics WHERE id = ?').get(id) as any
     const createdAt = existing?.created_at ?? now
+    /* 新字段不传就保持原值：旧版客户端/工具只发 title+count，不该把已配好的源与类型清空 */
+    const sources = input?.sources === undefined
+      ? safeJson(existing?.sources, []).map((x: any) => str(x)).filter(Boolean)
+      : list(input.sources).map((x: any) => str(x).trim()).filter(Boolean).slice(0, 20)
+    const kinds = input?.kinds === undefined
+      ? safeJson(existing?.kinds, []).map((x: any) => normalizeNewsKind(x)).filter((k: string) => NEWS_KINDS.includes(k))
+      : list(input.kinds).map((x: any) => normalizeNewsKind(x)).filter((k: string) => NEWS_KINDS.includes(k)).slice(0, NEWS_KINDS.length)
+    const perSourceLimit = input?.perSourceLimit === undefined
+      ? Number(existing?.per_source_limit ?? 0)
+      : Math.max(0, Math.min(20, Math.round(num(input.perSourceLimit, 0))))
     if (existing) {
-      this.db.prepare(`UPDATE news_topics SET title=?, query=?, schedule_kind=?, times=?, weekday=?, custom_cron=?, schedule_text=?, cron_task_ids=?, enabled=?, count=?, updated_at=? WHERE id=?`)
-        .run(title, query, kind, JSON.stringify(times), weekday, customCron, scheduleText, JSON.stringify(cronTaskIds), enabled, count, now, id)
+      this.db.prepare(`UPDATE news_topics SET title=?, query=?, schedule_kind=?, times=?, weekday=?, custom_cron=?, schedule_text=?, cron_task_ids=?, enabled=?, count=?, sources=?, kinds=?, per_source_limit=?, updated_at=? WHERE id=?`)
+        .run(title, query, kind, JSON.stringify(times), weekday, customCron, scheduleText, JSON.stringify(cronTaskIds), enabled, count, JSON.stringify(sources), JSON.stringify(kinds), perSourceLimit, now, id)
     } else {
-      this.db.prepare(`INSERT INTO news_topics(id, title, query, schedule_kind, times, weekday, custom_cron, schedule_text, cron_task_ids, enabled, count, last_run_at, created_at, updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(id, title, query, kind, JSON.stringify(times), weekday, customCron, scheduleText, JSON.stringify(cronTaskIds), enabled, count, null, createdAt, now)
+      this.db.prepare(`INSERT INTO news_topics(id, title, query, schedule_kind, times, weekday, custom_cron, schedule_text, cron_task_ids, enabled, count, sources, kinds, per_source_limit, last_run_at, created_at, updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(id, title, query, kind, JSON.stringify(times), weekday, customCron, scheduleText, JSON.stringify(cronTaskIds), enabled, count, JSON.stringify(sources), JSON.stringify(kinds), perSourceLimit, null, createdAt, now)
     }
     return toNewsTopic(this.db.prepare('SELECT * FROM news_topics WHERE id = ?').get(id))
+  }
+
+  /**
+   * 记下每个源最近一次采集的结果（成功/报错/耗时/时间）。
+   * 独立方法而不是复用 saveNewsTopic：采集是高频路径，不能因为「写健康度」顺手改到订阅的标题和排期。
+   */
+  updateNewsSourceHealth(topicId: string, health: Record<string, any>): void {
+    try {
+      this.db.prepare('UPDATE news_topics SET source_health = ? WHERE id = ?').run(JSON.stringify(health ?? {}), topicId)
+    } catch (cause) {
+      console.warn('[dsh-workbench] 写入新闻源健康度失败（不影响采集）：', cause)
+    }
   }
 
   deleteNewsTopic(id: string): void {
@@ -3820,9 +3900,19 @@ class JsonStore {
 
   /** 新闻：与任务快照同文件，但由独立方法读写，任务快照保存不会覆盖它。 */
   listNews(): { topics: any[]; items: any[] } {
-    const topics = this.newsTopics.map(t => ({ ...t, count: Number(t.count ?? 6), times: list(t.times), cronTaskIds: list(t.cronTaskIds) }))
+    const topics = this.newsTopics.map(t => ({
+      ...t,
+      count: Number(t.count ?? 6),
+      times: list(t.times),
+      cronTaskIds: list(t.cronTaskIds),
+      /* 老 JSON 库里的订阅没有这几个字段，读时给默认值，前端不用到处判空 */
+      sources: list(t.sources).map((x: any) => str(x)).filter(Boolean),
+      kinds: list(t.kinds).map((x: any) => normalizeNewsKind(x)).filter((k: string) => NEWS_KINDS.includes(k)),
+      perSourceLimit: Number(t.perSourceLimit ?? 0),
+      sourceHealth: t.sourceHealth ?? {},
+    }))
     const items = this.newsItems.slice().sort((x, y) => String(y.fetchedAt).localeCompare(String(x.fetchedAt))).slice(0, 400)
-      .map(i => ({ ...i, aiSummary: String(i.aiSummary ?? ''), titleZh: String(i.titleZh ?? ''), summaryZh: String(i.summaryZh ?? '') }))
+      .map(i => ({ ...i, kind: normalizeNewsKind(i.kind), aiSummary: String(i.aiSummary ?? ''), titleZh: String(i.titleZh ?? ''), summaryZh: String(i.summaryZh ?? '') }))
     return { topics, items }
   }
   updateNewsTranslation(rows: Array<{ id: string; titleZh: string; summaryZh: string }>): number {
@@ -3857,6 +3947,17 @@ class JsonStore {
       cronTaskIds: list(input?.cronTaskIds).map(x => str(x)).filter(Boolean),
       enabled: input?.enabled !== false,
       count: Math.max(1, Math.min(20, Math.round(num(input?.count, 6)))),
+      /* 新字段不传就保持原值，避免旧调用方把已配好的源/类型清空 */
+      sources: input?.sources === undefined
+        ? list(existing?.sources).map((x: any) => str(x)).filter(Boolean)
+        : list(input.sources).map((x: any) => str(x).trim()).filter(Boolean).slice(0, 20),
+      kinds: input?.kinds === undefined
+        ? list(existing?.kinds).map((x: any) => normalizeNewsKind(x)).filter((k: string) => NEWS_KINDS.includes(k))
+        : list(input.kinds).map((x: any) => normalizeNewsKind(x)).filter((k: string) => NEWS_KINDS.includes(k)).slice(0, NEWS_KINDS.length),
+      perSourceLimit: input?.perSourceLimit === undefined
+        ? Number(existing?.perSourceLimit ?? 0)
+        : Math.max(0, Math.min(20, Math.round(num(input.perSourceLimit, 0)))),
+      sourceHealth: existing?.sourceHealth ?? {},
       lastRunAt: existing?.lastRunAt ?? null,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
@@ -3870,6 +3971,14 @@ class JsonStore {
   deleteNewsTopic(id: string): void {
     this.newsTopics = this.newsTopics.filter(t => t.id !== id)
     this.newsItems = this.newsItems.filter(i => i.topicId !== id)
+    this.persistNews()
+  }
+
+  /** 记下每源最近一次采集结果；与 SQLite 版同一契约。 */
+  updateNewsSourceHealth(topicId: string, health: Record<string, any>): void {
+    const target: any = this.newsTopics.find(t => t.id === topicId)
+    if (target === undefined) return
+    target.sourceHealth = health ?? {}
     this.persistNews()
   }
 
@@ -4819,6 +4928,11 @@ function toNewsTopic(row: any): any {
     cronTaskIds: safeJson(row.cron_task_ids, []),
     enabled: Number(row.enabled) === 1,
     count: Number(row.count ?? 6),
+    /* 订阅模型扩字段（2026-11-01）：sources/kinds 为空数组 = 不限制；perSourceLimit=0 = 沿用 count */
+    sources: safeJson(row.sources, []).map((x: any) => String(x)).filter(Boolean),
+    kinds: safeJson(row.kinds, []).map((x: any) => normalizeNewsKind(x)).filter((k: string) => NEWS_KINDS.includes(k)),
+    perSourceLimit: Number(row.per_source_limit ?? 0),
+    sourceHealth: safeJson(row.source_health, {}),
     lastRunAt: row.last_run_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -4836,7 +4950,8 @@ function toNewsItem(row: any): any {
     summary: row.summary ?? '',
     aiSummary: row.ai_summary ?? '',
     sourceKey: row.source_key ?? '',
-    kind: row.kind ?? '',
+    /* 读取时也归一：库里万一还留着旧值，前端不该看到两套口径 */
+    kind: normalizeNewsKind(row.kind),
     titleZh: row.title_zh ?? '',
     summaryZh: row.summary_zh ?? '',
     fetchedAt: row.fetched_at,
@@ -4856,27 +4971,89 @@ function cleanTimes(value: unknown): string[] {
 /** 来源类别：官方一手 / 代码版本 / 社区 / 媒体。自由文本兜底为空串。 */
 const NEWS_SOURCE_KEYS = ['official', 'github', 'community', 'media']
 /**
- * 内容类型。
- * 前 8 个是早期「游戏资讯」口径留下的，保留兼容；
- * 后 4 个是「游戏技术雷达」口径新增：开源项目 / 工具 / 教程 / 论文。
- * 用户 2026-10-31 明确：GitHub 这条源不是查引擎发版，而是找新鲜好用的开源游戏工具与项目。
+ * 内容类型 —— 「游戏技术雷达」口径的 7 类（2026-11-01 迁移）。
+ * 旧 12 类（update/dlc/announcement/dev/community/data/review/peripheral/oss/tool/tutorial/paper）
+ * 是「游戏资讯 + 雷达」两套混在一起，同一条内容常有两三个都说得通。现行 7 类只看内容形态。
  */
-const NEWS_KINDS = ['update', 'dlc', 'announcement', 'dev', 'community', 'data', 'review', 'peripheral', 'oss', 'tool', 'tutorial', 'paper']
+const NEWS_KINDS = ['release', 'oss-launch', 'tutorial', 'deep-dive', 'paper', 'tool-update', 'other']
+/**
+ * 旧值 → 新值。**读旧数据、收模型输出**都要过这一层，保证库里不会同时存在两套口径。
+ * 认不出的值一律 other：宁可归到兜底，也不让一条奇怪的值把整个列表的筛选打乱。
+ */
+const NEWS_KIND_ALIASES: Record<string, string> = {
+  release: 'release', update: 'release', announcement: 'release',
+  'oss-launch': 'oss-launch', oss: 'oss-launch',
+  'tool-update': 'tool-update', tool: 'tool-update',
+  tutorial: 'tutorial',
+  paper: 'paper',
+  'deep-dive': 'deep-dive', review: 'deep-dive',
+  other: 'other', dlc: 'other', dev: 'other', community: 'other', data: 'other', peripheral: 'other',
+}
+function normalizeNewsKind(raw: unknown): string {
+  const key = str(raw).trim().toLowerCase()
+  return NEWS_KIND_ALIASES[key] ?? 'other'
+}
 /**
  * 时间窗放宽的类型。
- * 开源项目 / 工具 / 教程 / 论文是「常青」内容：一个三个月前发布的好用插件，
+ * 开源首发 / 工具更新 / 教程 / 论文是「常青」内容：一个三个月前发布的好用插件，
  * 今天看到依然有价值，用 14 天闸门会把它们全部误杀（实测 discovery 源
- * 候选创建时间普遍在 20–120 天，全被 stale 丢掉）。所以按常青处理。
+ * 候选创建时间普遍在 20–120 天，全被 stale 丢掉）。
  *
- * 2026-11-01 收紧：只留 oss / tool / tutorial / paper。
- * 原来的 update / dlc / announcement 是「游戏资讯」时代放进来的——版本更新、DLC、公告
- * 都是有时效的事件，三个月前的补丁说明就是过期信息，必须受 14 天闸门管。
- * 把它们挂在常青清单上等于把闸门对最该卡的几类内容关掉。
+ * 2026-11-01 收紧：release 与 deep-dive 都**不**在常青清单里。
+ * 版本发布是有时效的事件，三个月前的补丁说明就是过期信息；深度解析虽长文，但雷达看的是「最近在讨论什么」。
  */
-const NEWS_EVERGREEN_KINDS = ['oss', 'tool', 'tutorial', 'paper']
+const NEWS_EVERGREEN_KINDS = ['oss-launch', 'tool-update', 'tutorial', 'paper']
 /** 常规条目最大年龄（天）；常青类型放宽到 180 天。 */
 const NEWS_MAX_AGE_DAYS = 14
 const NEWS_MAX_AGE_DAYS_EVERGREEN = 180
+/**
+ * 相关性闸门（2026-11-01 上线）。
+ *
+ * 为什么需要：实测采集回来的条目里约 3/10 与技术无关——机核的综合流会把「盘点 galgame 女主角」
+ * 「聊聊龙珠超」当技术媒体内容收进来，GitHub 的 game-ai 查询会把私服/机器人外挂仓库命中。
+ * 这不是采集器写错了，是「按关键词检索」这件事本身就会带上噪音。
+ *
+ * 做法只有两层，刻意保持小而可读：
+ *   1) 信任源免检：sourceKey=official 的条目来自引擎/框架官方博客，编辑已经把关过，
+ *      标题常是版本号 + 代号（「Dev snapshot: Godot 4.8 beta 2」），套技术词反而容易误杀。
+ *   2) 其余源：先过黑名单（命中即丢，优先于白名单），再要求标题或摘要命中技术词白名单。
+ *
+ * **不要把它做成通用分类器**：这里没有语义理解，只有一张手写词表。词表只增不改成
+ * 「自动识别专名/领域」，那种做法会把大量正确条目误杀（与翻译层 brandLost 的教训相同）。
+ */
+const NEWS_TRUSTED_SOURCE_KEYS = ['official']
+/** 命中即丢。优先于白名单判断：一条「盘点 Unity 新功能」还是盘点，不是技术内容。 */
+const NEWS_OFF_TOPIC_PATTERNS: RegExp[] = [
+  /私服|开服|外挂|辅助脚本|破解|盗版|充钱/,
+  /private ?server|wallhack|aimbot|gold ?seller|keygen/i,
+  /galgame|gal ?game|女主|waifu|恋爱模拟/i,
+  /盘点|周报|赛程|万智牌|开箱|联动周边|娱乐八卦|闲聊/,
+  /攻略|游戏推荐|新游推荐|试玩|赛事|电竞赛|选手|战队/i,
+  /* 番剧/播客类：实测「SP.13 龙珠再临！聊聊最近开播的龙珠超」靠摘要里的「指南/架构」混进了白名单。
+     这里只挡「开播/新番/番剧/声优」这类只在动画语境出现的词——技术文里不会出现，
+     而「动画/animation」本身是正当技术词，仍留在白名单里。 */
+  /开播|新番|番剧|剧场版|声优|动漫|动画片/,
+]
+/** 命中任一才算「与技术有关」。引擎名 / 图形与引擎技术 / AI 都算；不单独收 game、游戏这种过泛的词。 */
+const NEWS_TECH_TERMS: RegExp[] = [
+  /unity|unreal|\bue[45]\b|godot|bevy|cocos|o3de|defold|raylib|monogame|stride|flax|three\.js|babylon/i,
+  /shader|render|ray ?trac|rasteriz|vulkan|opengl|directx|webgpu|webgl|\bgpu\b|\bcpu\b|\becs\b|entity component/i,
+  /physics|物理|netcode|网络同步|rollback|工具链|toolchain|\bsdk\b|\bapi\b|插件|plugin|addon|框架|framework|引擎|engine/i,
+  /编译|compiler|\bllvm\b|wasm|性能|optimiz|pipeline|材质|贴图|texture|mesh|lightmap|addressable|热更|hot ?reload/i,
+  /\blod\b|culling|instanc|procedural|procgen|navmesh|寻路|pathfind|动画|animation|骨骼|rigging|编辑器|editor/i,
+  /tutorial|教程|指南|guide|how ?to|原理|剖析|源码分析|deep ?dive|架构|architecture|开源|open ?source/i,
+  /* 游戏 AI 研究与训练环境：实测 AutoTavern（炉石 RL 模拟器）因为标题里没有引擎名被误杀，
+     而「游戏 AI 技术」本来就在雷达范围内。 */
+  /reinforcement learning|\brl\b|simulator|模拟器|benchmark|数据集|dataset|训练环境|模型训练|推理/i,
+  /\bai\b|\bllm\b|\bgpt\b|\bagent\b|diffusion|transformer|neural|机器学习|深度学习|推理|\brag\b|embedding|微调|fine-?tun|模型训练/i,
+]
+/** 判定一条新闻是否与技术主题无关；返回 true 表示丢弃。 */
+function isOffTopicNews(input: { title: string; summary: string; aiSummary?: string; sourceKey: string }): boolean {
+  if (NEWS_TRUSTED_SOURCE_KEYS.includes(input.sourceKey)) return false
+  const text = `${input.title}\n${input.summary}\n${input.aiSummary ?? ''}`
+  if (NEWS_OFF_TOPIC_PATTERNS.some((re) => re.test(text))) return true
+  return !NEWS_TECH_TERMS.some((re) => re.test(text))
+}
 
 type CleanNewsItem = { title: string; url: string; source: string; sourceKey: string; kind: string; publishedAt: string; summary: string; aiSummary: string; titleZh: string; summaryZh: string; hash: string }
 
@@ -4889,12 +5066,12 @@ function parseNewsDate(text: string): number | null {
 }
 
 /**
- * 校验 + 归类 + 新鲜度闸门。
- * 模型吐的内容一概不可信，这里做确定性兜底：URL 合法性、枚举白名单、时间过旧/未来。
+ * 校验 + 归类 + 新鲜度闸门 + 相关性闸门。
+ * 模型吐的内容一概不可信，这里做确定性兜底：URL 合法性、枚举白名单、时间过旧/未来、主题是否对题。
  */
-function cleanNewsItemsDetailed(value: unknown): { items: CleanNewsItem[]; dropped: { badUrl: number; stale: number; future: number } } {
+function cleanNewsItemsDetailed(value: unknown): { items: CleanNewsItem[]; dropped: { badUrl: number; stale: number; future: number; offTopic: number } } {
   const items: CleanNewsItem[] = []
-  const dropped = { badUrl: 0, stale: 0, future: 0 }
+  const dropped = { badUrl: 0, stale: 0, future: 0, offTopic: 0 }
   const now = Date.now()
   for (const raw of list(value).slice(0, 20)) {
     const title = str(raw?.title).trim().slice(0, 300)
@@ -4906,8 +5083,8 @@ function cleanNewsItemsDetailed(value: unknown): { items: CleanNewsItem[]; dropp
       if (parsed.protocol === 'http:' || parsed.protocol === 'https:') url = parsed.toString().slice(0, 2000)
     } catch { /* 非法 URL 丢弃 */ }
     if (url === '') { dropped.badUrl += 1; continue }
-    const kindRaw = str(raw?.kind).trim().toLowerCase()
-    const kind = NEWS_KINDS.includes(kindRaw) ? kindRaw : ''
+    /* 认不出的 kind 兜底成 other：旧数据、模型乱写都走同一层，库里不出现第二套口径 */
+    const kind = normalizeNewsKind(raw?.kind)
     const publishedAt = str(raw?.publishedAt).trim().slice(0, 40)
     const stamp = parseNewsDate(publishedAt)
     if (stamp !== null) {
@@ -4922,6 +5099,8 @@ function cleanNewsItemsDetailed(value: unknown): { items: CleanNewsItem[]; dropp
     const source = str(raw?.source).trim().slice(0, 120)
     const summary = str(raw?.summary).trim().slice(0, 600)
     const aiSummary = str(raw?.aiSummary).trim().slice(0, 1600)
+    /* 相关性闸门放在时效闸门之后：先挡掉明显过期的，再做主题判断，日志里的丢弃原因更接近真实情况 */
+    if (isOffTopicNews({ title, summary, aiSummary, sourceKey })) { dropped.offTopic += 1; continue }
     /* 机翻结果也过一遍校验：长度限制与原文一致，避免异常长串撑爆卡片 */
     const titleZh = str(raw?.titleZh).trim().slice(0, 300)
     const summaryZh = str(raw?.summaryZh).trim().slice(0, 600)
@@ -5641,7 +5820,7 @@ function registerNewsTool(ctx: any, store: SqliteStore | JsonStore): void {
     name: 'workbench_news_publish',
     description: '把一次新闻检索的结果写入个人工作台的新闻订阅。'
       + '仅用于定时新闻任务：传入订阅 id 与新闻数组（title/source/sourceKey/kind/url/publishedAt/summary）。'
-      + '服务端会按 URL 去重，并丢弃过旧（常规 14 天、版本/公告类 180 天）与未来日期的条目；没有新闻时传空数组。不要用它写其他内容。',
+      + '服务端会按 URL 去重，丢弃过旧（release 与 deep-dive 14 天，其余 180 天）、未来日期、以及与技术主题无关的条目；没有新闻时传空数组。不要用它写其他内容。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -5658,7 +5837,7 @@ function registerNewsTool(ctx: any, store: SqliteStore | JsonStore): void {
               url: { type: 'string', description: 'http/https 原文链接，不得编造。' },
               source: { type: 'string', description: '来源媒体名，建议写成「站点 · 类型」，例如「GitHub · Releases」。' },
               sourceKey: { type: 'string', enum: ['official', 'github', 'community', 'media'], description: '来源类别：官方一手 / 代码版本 / 社区 / 媒体。' },
-              kind: { type: 'string', enum: ['update', 'dlc', 'announcement', 'dev', 'community', 'data', 'review', 'peripheral'], description: '内容类型：版本更新 / DLC / 官方公告 / 开发进展 / 社区热议 / 数据销量 / 媒体评测 / 周边联动。' },
+              kind: { type: 'string', enum: ['release', 'oss-launch', 'tutorial', 'deep-dive', 'paper', 'tool-update', 'other'], description: '内容类型：官方发布 / 开源首发 / 教程 / 深度解析 / 论文 / 工具更新 / 其它。按内容形态选，不确定就用 other。' },
               publishedAt: { type: 'string', description: '发布时间 YYYY-MM-DD，可留空。' },
               summary: { type: 'string', description: '中文一句话摘要，不超过 60 字。' },
               aiSummary: { type: 'string', description: 'AI 总结：100–180 字中文，说明事件、关键数据与影响/看点；卡片会直接展示。' },
@@ -5674,8 +5853,8 @@ function registerNewsTool(ctx: any, store: SqliteStore | JsonStore): void {
       render: (_args: unknown, value: any) => {
         if (value?.ok) {
           const d = value.dropped ?? {}
-          const cut = (d.stale ?? 0) + (d.future ?? 0) + (d.badUrl ?? 0)
-          return [{ type: 'text', text: `已写入 ${value.inserted} 条新闻，跳过重复 ${value.skipped} 条${cut > 0 ? `，丢弃 ${cut} 条（过旧 ${d.stale ?? 0} / 日期异常 ${d.future ?? 0} / 链接无效 ${d.badUrl ?? 0}）` : ''}。` }]
+          const cut = (d.stale ?? 0) + (d.future ?? 0) + (d.badUrl ?? 0) + (d.offTopic ?? 0)
+          return [{ type: 'text', text: `已写入 ${value.inserted} 条新闻，跳过重复 ${value.skipped} 条${cut > 0 ? `，丢弃 ${cut} 条（过旧 ${d.stale ?? 0} / 日期异常 ${d.future ?? 0} / 链接无效 ${d.badUrl ?? 0} / 与技术主题无关 ${d.offTopic ?? 0}）` : ''}。` }]
         }
         return [{ type: 'text', text: `写入失败：${String(value?.error ?? 'unknown')}` }]
       },
@@ -6989,14 +7168,27 @@ export function apply(ctx: any): void {
           if (topicId === '') { send(res, 400, { error: 'missing_topic' }); return }
           const topic = store.listNews().topics.find((t: any) => t.id === topicId)
           if (!topic) { send(res, 404, { error: 'unknown_topic', topicId }); return }
-          const sourceIds = list(body?.sourceIds).map((x) => str(x)).filter(Boolean)
+          /* 源与类型：请求体显式给了就用请求体的，否则用订阅自己配的（sources/kinds 为空 = 不限制） */
+          const bodySources = list(body?.sourceIds).map((x) => str(x)).filter(Boolean)
+          const sourceIds = bodySources.length > 0 ? bodySources : list(topic.sources).map((x: any) => str(x)).filter(Boolean)
           const limit = Math.max(1, Math.min(20, Math.round(num(body?.limit, topic.count ?? 6))))
           const params: Record<string, string> = { query: str(topic.query ?? '') }
           const extra = body?.params
           if (extra && typeof extra === 'object') {
             for (const [k, v] of Object.entries(extra)) params[str(k)] = str(v)
           }
-          const result = await collectFromSources(sourceIds, limit, params)
+          const result = await collectFromSources(sourceIds, limit, params, {
+            perSourceLimit: Number(body?.perSourceLimit ?? topic.perSourceLimit ?? 0),
+            kinds: list(topic.kinds).map((x: any) => str(x)).filter(Boolean),
+          })
+          /* 每源最近一次结果落到订阅上（ok/error/ms/at）：卡片要能直接说清「哪个源挂了」，
+             不用让用户去翻宿主日志。写失败不影响本次采集。 */
+          const health: Record<string, any> = {}
+          const at = isoDateTime()
+          for (const run of result.runs) {
+            health[run.id] = run.error ? { ok: false, error: run.error, ms: run.ms, at } : { ok: true, error: '', ms: run.ms, at }
+          }
+          try { store.updateNewsSourceHealth(topicId, health) } catch { /* 健康度写失败不影响采集 */ }
           /* 中文译文：直连采集拿到的都是英文原文，而 cron 那条模型路径本来就产中文，
              两条路混在一张信息流里会中英参半。translate=false 可跳过（离线调试/省额度）。
              翻译失败不阻塞入库：原文照进，只是没有中文对照。 */

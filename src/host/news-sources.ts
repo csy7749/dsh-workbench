@@ -14,25 +14,31 @@
  *     URL 合法性、枚举白名单、14/180 天时效闸门）。
  */
 
-/** 与 index.ts 的 NEWS_SOURCE_KEYS / NEWS_KINDS 保持一致。 */
 export type NewsSourceKey = 'official' | 'github' | 'community' | 'media'
+
+/**
+ * 与 index.ts 的 NEWS_SOURCE_KEYS / NEWS_KINDS 保持一致。
+ *
+ * 2026-11-01 迁移到「游戏技术雷达」口径的 7 类。
+ * 旧的 12 类是「游戏资讯」时代留下的（update/dlc/announcement/dev/community/data/review/peripheral
+ * 加上雷达新增的 oss/tool/tutorial/paper），两套混在一起没人说得清一条属于哪类。
+ * 现行 7 类只看**内容形态**，不看来源：
+ */
 export type NewsKind =
-  | 'update'
-  | 'dlc'
-  | 'announcement'
-  | 'dev'
-  | 'community'
-  | 'data'
-  | 'review'
-  | 'peripheral'
-  /** 开源项目（GitHub 发现的仓库） */
-  | 'oss'
-  /** 工具 / 插件 */
-  | 'tool'
+  /** 官方发布：引擎/工具/框架的新版本与公告 */
+  | 'release'
+  /** 开源首发：新冒出来的开源项目与工具 */
+  | 'oss-launch'
   /** 教程 */
   | 'tutorial'
+  /** 深度解析：原理剖析、源码分析、技术长文 */
+  | 'deep-dive'
   /** 论文 */
   | 'paper'
+  /** 工具更新：已有工具的版本迭代 */
+  | 'tool-update'
+  /** 其它：兜底，读到的未知值也归这里 */
+  | 'other'
 
 export type RawNewsItem = {
   title: string
@@ -243,7 +249,7 @@ async function collectEngineOfficial(limit: number): Promise<RawNewsItem[]> {
         url: it.url,
         source: feed.label,
         sourceKey: 'official',
-        kind: 'update',
+        kind: 'release',
         publishedAt: toDateOnly(it.date),
         summary: plainText(it.desc, 600),
       }))
@@ -315,7 +321,7 @@ async function fetchRepoReleases(repo: string, limit: number): Promise<RawNewsIt
     url: String(rel?.html_url ?? ''),
     source: `GitHub · ${repo}`,
     sourceKey: 'github' as NewsSourceKey,
-    kind: 'update' as NewsKind,
+    kind: 'release' as NewsKind,
     publishedAt: toDateOnly(String(rel?.published_at ?? rel?.created_at ?? '')),
     summary: plainText(String(rel?.body ?? ''), 600),
   })).filter((x: RawNewsItem) => x.url !== '')
@@ -370,7 +376,7 @@ async function collectSteamNews(limit: number, params: Record<string, string>): 
       url: String(it?.url ?? ''),
       source: `Steam · ${String(it?.feedlabel ?? appid)}`,
       sourceKey: 'official' as NewsSourceKey,
-      kind: 'update' as NewsKind,
+      kind: 'release' as NewsKind,
       publishedAt: date > 0 ? new Date(date * 1000).toISOString().slice(0, 10) : '',
       summary: plainText(String(it?.contents ?? ''), 600),
     }
@@ -391,11 +397,11 @@ async function collectSteamNews(limit: number, params: Record<string, string>): 
  * 因此默认只跑 3 条查询；配了 GITHUB_TOKEN 才放开到 5 条。
  */
 const DISCOVERY_QUERIES: { q: string; kind: NewsKind; label: string }[] = [
-  { q: 'topic:unity', kind: 'oss', label: 'Unity 相关项目' },
-  { q: 'topic:game-ai', kind: 'oss', label: '游戏 AI' },
-  { q: 'topic:game-engine', kind: 'oss', label: '游戏引擎/工具' },
-  { q: 'topic:godot', kind: 'oss', label: 'Godot 项目' },
-  { q: 'topic:unreal-engine', kind: 'oss', label: 'Unreal 项目' },
+  { q: 'topic:unity', kind: 'oss-launch', label: 'Unity 相关项目' },
+  { q: 'topic:game-ai', kind: 'oss-launch', label: '游戏 AI' },
+  { q: 'topic:game-engine', kind: 'oss-launch', label: '游戏引擎/工具' },
+  { q: 'topic:godot', kind: 'oss-launch', label: 'Godot 项目' },
+  { q: 'topic:unreal-engine', kind: 'oss-launch', label: 'Unreal 项目' },
 ]
 
 function githubHeaders(): Record<string, string> {
@@ -503,9 +509,9 @@ async function collectGithubDiscovery(limit: number, params: Record<string, stri
 const TECH_MEDIA_FEEDS: { id: string; label: string; url: string; kind: NewsKind; weight: number }[] = [
   // 权重直接反映技术密度：GameFromScratch 条条是开发工具发布，80.lv 是技术/美术拆解，
   // 机核是综合游戏文化（周报、赛事、发售），技术条目只是偶尔出现，所以给最低权重。
-  { id: 'gamefromscratch', label: 'GameFromScratch · 工具新闻', url: 'https://gamefromscratch.com/feed/', kind: 'tool', weight: 3 },
+  { id: 'gamefromscratch', label: 'GameFromScratch · 工具新闻', url: 'https://gamefromscratch.com/feed/', kind: 'tool-update', weight: 3 },
   { id: '80lv', label: '80.lv · 游戏技术', url: 'https://80.lv/feed', kind: 'tutorial', weight: 3 },
-  { id: 'gcores', label: '机核 · 中文游戏媒体', url: 'https://www.gcores.com/rss', kind: 'community', weight: 1 },
+  { id: 'gcores', label: '机核 · 中文游戏媒体', url: 'https://www.gcores.com/rss', kind: 'other', weight: 1 },
 ]
 
 async function collectTechMedia(limit: number): Promise<RawNewsItem[]> {
@@ -559,6 +565,13 @@ const HN_QUERIES = [
  * 实测样本：「Notes on the Complex Roots of Unity」（单位根，纯数学，45★）。
  * 这类条目进技术雷达是纯噪音，所以先过一道语境闸门：
  * 命中下面这些短语、且标题里没有任何游戏开发字样，就丢掉。
+ *
+ * 这一层与 index.ts 的「相关性闸门」（NEWS_OFF_TOPIC_PATTERNS / NEWS_TECH_TERMS）**分工不同，不合并**：
+ * - 这里管「查询词本身的歧义」：HN 全文检索把 unity 当政治/数学词命中，只有这个源有这问题，
+ *   而且判据是「命中噪音短语 **且** 没有任何游戏开发字样」，比其他源更宽。
+ * - 那边管「整条内容跑题」：所有非官方源共用，判据是「命中黑名单，或一个技术词都没有」。
+ * 合并会两头受伤：把 HN 的宽判据推广到全源会漏掉大量偏题条目，把通用闸门塞进 HN 会误杀
+ * 「Show HN: I built a physics engine」这类标题不含 game 字样的正当技术帖。
  */
 const HN_NOISE_PATTERNS = /roots? of unity|unity (?:government|party|cup|day|church|of (?:the|faith))|national unity|political unity|european unity|african unity|spiritual unity|unity (?:and|is|in) /i
 const HN_GAME_HINT = /game|engine|gamedev|shader|render|3d|sprite|level.?design|unreal|godot|unity.?editor|textmesh|indie|mod|mobile/i
@@ -608,7 +621,7 @@ async function collectHackerNews(limit: number, params: Record<string, string>):
             url: String(h.url || hnLink),
             source: item.label,
             sourceKey: 'community',
-            kind: 'community',
+            kind: 'other',
             publishedAt: toDateOnly(String(h.created_at ?? '')),
             summary: plainText(`${points} 分 · ${comments} 条讨论 · ${String(h.url || hnLink)}`, 600),
           }
@@ -639,7 +652,7 @@ export const NEWS_SOURCES: SourceDescriptor[] = [
     id: 'github-discover',
     label: 'GitHub 项目发现（开源工具/AI）',
     layer: 'github',
-    kind: 'oss',
+    kind: 'oss-launch',
     params: [
       { key: 'days', label: '新鲜窗口（天）', placeholder: '默认 120，最大 180' },
       { key: 'minStars', label: '最低 star', placeholder: '默认 20，用于过滤噪音' },
@@ -652,7 +665,7 @@ export const NEWS_SOURCES: SourceDescriptor[] = [
     id: 'engine-official',
     label: '引擎官方（Unity / Godot / UE）',
     layer: 'official',
-    kind: 'update',
+    kind: 'release',
     weight: 3,
     enabled: true,
     note: '直连原生 RSS。版本资讯的正解在这里，不在 GitHub——Unity 与 UE 都不在 GitHub Releases 发版。',
@@ -661,7 +674,7 @@ export const NEWS_SOURCES: SourceDescriptor[] = [
     id: 'tech-media',
     label: '游戏技术媒体（工具/技术/中文）',
     layer: 'media',
-    kind: 'tool',
+    kind: 'tool-update',
     weight: 2,
     enabled: true,
     note: '直连原生 RSS：GameFromScratch（开发工具新闻）、80.lv（游戏技术）、机核（中文综合）。indienova 与 GameDev.net 无原生 RSS 或被 Cloudflare 拦。',
@@ -670,7 +683,7 @@ export const NEWS_SOURCES: SourceDescriptor[] = [
     id: 'hn-tech',
     label: 'Hacker News 技术讨论',
     layer: 'community',
-    kind: 'community',
+    kind: 'other',
     params: [
       { key: 'days', label: '时间窗（天）', placeholder: '默认 120，范围 7–180' },
       { key: 'minPoints', label: '最低分数', placeholder: '默认 5，0 表示不限制' },
@@ -683,7 +696,7 @@ export const NEWS_SOURCES: SourceDescriptor[] = [
     id: 'github-releases',
     label: 'GitHub Releases（关注仓库的发版）',
     layer: 'github',
-    kind: 'update',
+    kind: 'release',
     params: [{ key: 'repo', label: '仓库', placeholder: 'owner/repo，逗号分隔多个；留空用默认开源引擎' }],
     weight: 2,
     enabled: true,
@@ -693,7 +706,7 @@ export const NEWS_SOURCES: SourceDescriptor[] = [
     id: 'steam-news',
     label: 'Steam 官方新闻',
     layer: 'official',
-    kind: 'update',
+    kind: 'release',
     params: [{ key: 'appid', label: 'AppID', placeholder: '留空从订阅词里找数字，再兜底 2358720' }],
     weight: 1,
     enabled: false,
@@ -708,16 +721,28 @@ export type CollectResult = {
   total: number
 }
 
+/** 单次采集的可选约束：每源条数、内容类型白名单。 */
+export type CollectOptions = {
+  /** 每个源最多取几条候选；0/缺省 = 沿用 limit。 */
+  perSourceLimit?: number
+  /** 只要这几类内容（NewsKind）；空数组 = 不限制。 */
+  kinds?: string[]
+}
+
 /** 并发跑选中的源；单源失败只记 error，不影响其他源。 */
 export async function collectFromSources(
   sourceIds: string[],
   limit: number,
   params: Record<string, string>,
+  options: CollectOptions = {},
 ): Promise<CollectResult> {
   const wanted = NEWS_SOURCES.filter((s) => (sourceIds.length === 0 ? s.enabled : sourceIds.includes(s.id)))
   // 每个源先取足够多的候选（limit 的上限 20），选条交给 pickWithQuota 统一分配，
   // 这样「某个源刚好没料」时余量能补给别的源，而不是各源先自行截断再撞车。
-  const perSource = Math.min(20, Math.max(1, limit))
+  // perSourceLimit 是订阅自己配的（一个订阅想要「每源 3 条引擎官方 + 1 条 HN」这种配比）。
+  const askedPerSource = Math.round(Number(options.perSourceLimit ?? 0))
+  const perSource = Math.min(20, Math.max(1, askedPerSource > 0 ? askedPerSource : limit))
+  const kinds = (options.kinds ?? []).map((k) => String(k).trim()).filter(Boolean)
   const runs = await Promise.all(
     wanted.map(async (src): Promise<SourceRun> => {
       const started = Date.now()
@@ -730,6 +755,9 @@ export async function collectFromSources(
         else if (src.id === 'github-releases') items = await collectGithubReleases(perSource, params)
         else if (src.id === 'steam-news') items = await collectSteamNews(perSource, params)
         else throw new Error(`unknown_source:${src.id}`)
+        /* 类型过滤放在配额分配之前：先把不要的类型剔掉，配额才算得准。
+           放在最后筛会让「挑中的 6 条里有 4 条被类型过滤掉」变成实际只进 2 条。 */
+        if (kinds.length > 0) items = items.filter((item) => kinds.includes(item.kind))
         return { id: src.id, label: src.label, items, ms: Date.now() - started }
       } catch (cause) {
         return { id: src.id, label: src.label, items: [], error: String((cause as Error)?.message ?? cause), ms: Date.now() - started }

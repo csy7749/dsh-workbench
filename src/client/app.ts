@@ -38,16 +38,26 @@ interface Task {
 }
 interface FocusSession { id: string; taskId: string | null; startedAt: string; minutes: number; completed: boolean }
 type NewsKind = 'daily' | 'workdays' | 'weekly' | 'custom'
+/** 每源最近一次采集结果（宿主写入；ok=false 的会显示在订阅卡片上） */
+interface NewsSourceHealth { ok: boolean; error: string; ms: number; at: string }
 interface NewsTopic {
   id: string; title: string; query: string; scheduleKind: NewsKind; times: string[]; weekday: number
   customCron: string; scheduleText: string; cronTaskIds: string[]; enabled: boolean; count: number
+  /** 采集哪些源（sourceId 数组）；空数组 = 全部启用的源 */
+  sources?: string[]
+  /** 只要哪些内容类型；空数组 = 不限制 */
+  kinds?: string[]
+  /** 每源取几条；0 = 沿用 count */
+  perSourceLimit?: number
+  /** 每源最近一次采集结果，键是 sourceId */
+  sourceHealth?: Record<string, NewsSourceHealth>
   lastRunAt: string | null; createdAt: string; updatedAt: string
 }
 interface NewsItem {
   id: string; topicId: string; title: string; url: string; source: string
   /** 来源类别枚举：official / github / community / media（宿主端白名单，非法值落库为空串） */
   sourceKey?: string
-  /** 内容类型枚举：update / dlc / announcement / dev / community / data / review / peripheral */
+  /** 内容类型枚举：release / oss-launch / tutorial / deep-dive / paper / tool-update / other */
   kind?: string
   publishedAt: string; summary: string; aiSummary: string; fetchedAt: string
   /** 机翻中文标题；空串=没翻（已是中文 / 翻译失败）。原文永远留在 title 里 */
@@ -2024,13 +2034,30 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     { title: '开源项目', query: 'GitHub 开源 项目 发布' },
   ]
 
-  /** 来源类别与内容类型的展示名；空串表示模型没给或给了非法值（宿主端会落库为空）。 */
+  /** 来源类别与内容类型的展示名；空串表示模型没给或给了非法值（宿主端会归一成 other）。 */
   const NEWS_ITEM_SOURCE_LABEL: Record<string, string> = { official: '官方', github: 'GitHub', community: '社区', media: '媒体' }
+  /**
+   * 采集源 id → 展示名。与宿主 src/host/news-sources.ts 的注册表对应；
+   * 认不出的 id 直接显示 id 本身——这里少一个映射只是不好看，不影响功能。
+   */
+  const NEWS_SOURCE_LABEL: Record<string, string> = {
+    'engine-official': '引擎官方',
+    'github-discover': 'GitHub 新项目',
+    'github-releases': 'GitHub Releases',
+    'tech-media': '技术媒体',
+    'hn-tech': 'Hacker News',
+    'steam-news': 'Steam',
+  }
+  /* 2026-11-01 迁移到「游戏技术雷达」的 7 类内容形态；旧 12 类（update/oss/tool/...）已由宿主迁移，
+     这里不再保留旧标签——留着只会让「查不到」和「真的是旧数据」混在一起。 */
   const NEWS_ITEM_KIND_LABEL: Record<string, string> = {
-    update: '版本更新', dlc: 'DLC', announcement: '公告', dev: '开发进展',
-    community: '社区热议', data: '数据', review: '评测', peripheral: '周边',
-    // 游戏技术雷达口径：GitHub 发现的开源项目与工具、教程、论文
-    oss: '开源项目', tool: '工具', tutorial: '教程', paper: '论文',
+    release: '版本发布',
+    'oss-launch': '开源首发',
+    tutorial: '教程',
+    'deep-dive': '深度解析',
+    paper: '论文',
+    'tool-update': '工具更新',
+    other: '其它',
   }
 
   function parseTimeList(text: string): string[] {
@@ -2083,6 +2110,16 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (paused > 0) return { label: '部分暂停', cls: 'amber' }
     return { label: '活跃', cls: 'green' }
   }
+  /**
+   * 上一轮采集里失败的源。宿主每轮把每源结果写进 source_health，
+   * 卡片直接把它说出来——否则用户只看到「这次没采到几条」，不知道为什么。
+   */
+  function failedSources(topic: NewsTopic): string[] {
+    const health = topic.sourceHealth ?? {}
+    return Object.keys(health)
+      .filter((id) => health[id] && health[id].ok === false)
+      .map((id) => NEWS_SOURCE_LABEL[id] ?? id)
+  }
   function topicNextRun(topic: NewsTopic): number | null {
     let next: number | null = null
     for (const id of topic.cronTaskIds) {
@@ -2114,37 +2151,38 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
    */
   function newsPrompt(topic: NewsTopic): string {
     const target = Math.max(1, Math.min(20, topic.count || 6))
-    return `你是「个人工作台」的新闻检索助手，任务是为一个订阅主题收集一轮可核实的资讯。\n`
+    return `你是「个人工作台」的游戏技术雷达检索助手，任务是为一个订阅主题收集一轮可核实的技术情报。\n`
       + `订阅主题：${topic.title}\n`
       + `检索词：${topic.query}\n`
-      + `把检索词按空格拆成若干个词，每个词都要单独检索一次；主题若是作品/产品，再用它的英文名、简称或别名、开发组或厂商名各检索一次。\n`
-      + `【时间】普通资讯只收最近 14 天内的；版本更新、DLC、公告类放宽到最近 180 天，但必须是仍生效的版本说明，别把几个月前的老补丁当新闻。publishedAt 必须填真实发布日期——服务端会按日期丢弃过旧条目。\n\n`
-      + `【数量】目标 ${target} 条。不足 ${target} 条时必须换词续搜（同义词、英文名、别名、厂商名），最多再搜两轮；确实凑不满才少给，并在最后一条的 aiSummary 里写明缺哪一类。禁止为了凑数塞不相关内容。\n\n`
-      + `【相关性】每条入库前自检一次：这条的主体是不是「${topic.title}」本身？主体是别的作品、别的公司、只是顺带提到本主题的，一律丢弃。宁可少，不许拿不相关的充数。\n\n`
-      + `【来源】下面四类都要主动找，最终至少覆盖其中 3 类：\n`
-      + `1. 一手/官方：官网、官方公告、发行商或开发组账号、Steam 商店页与更新日志\n`
-      + `2. 代码/版本：GitHub Releases / Tags / CHANGELOG（主题涉及开源项目时必须有）\n`
-      + `3. 社区：B站、知乎、NGA、贴吧、Reddit、小黑盒\n`
-      + `4. 媒体：游民星空、3DM、IGN、GameSpot、17173 等\n`
-      + `source 写成「站点名 · 类型」，例如「GitHub · Releases」「B站 · 官方号」「3DM · 媒体」；同时给 sourceKey：official / github / community / media。\n\n`
-      + `【类型】kind 取值与优先级，且至少 1 条属于前三项：\n`
-      + `1. update：版本更新 / 补丁说明\n`
-      + `2. dlc：DLC / 资料片\n`
-      + `3. announcement：官方公告、发售日、官方声明\n`
-      + `4. dev：开发进展、访谈\n`
-      + `5. community：社区热议、争议\n`
-      + `6. data：在线人数、销量、榜单数据\n`
-      + `7. review：媒体评测\n`
-      + `8. peripheral：周边商品、联动活动——只有前面凑不满才用，且最多 1 条\n\n`
+      + `把检索词按空格拆成若干个词，每个词都要单独检索一次；涉及引擎/工具时，再用它的官方名、大版本号各检索一次。\n`
+      + `【收什么】要有技术实质，不要游戏资讯：引擎与工具的新版本、开源项目首发、教程、原理剖析、论文、插件与工具迭代。主体是游戏本身（发售、评测、攻略、赛事、周边、DLC、私服）的一律不收。\n`
+      + `【时间】release（版本发布）只收最近 14 天内的；oss-launch / tool-update / tutorial / paper 属常青内容，放宽到最近 180 天。publishedAt 必须填真实发布日期——服务端会按日期丢弃过旧条目。\n\n`
+      + `【数量】目标 ${target} 条。不足 ${target} 条时必须换词续搜（英文名、引擎名、版本号、项目名），最多再搜两轮；确实凑不满才少给，并在最后一条的 aiSummary 里写明缺哪一类。禁止为了凑数塞不相关内容。\n\n`
+      + `【相关性】每条入库前自检一次：这条是不是在讲技术？只是顺带提到某个引擎、或者讲的是游戏内容本身的，一律丢弃。宁可少，不许拿不相关的充数。\n\n`
+      + `【来源】尽量覆盖其中 3 类以上：\n`
+      + `1. 官方一手：引擎/框架/工具的官方博客、Release Notes、版本公告\n`
+      + `2. 代码与版本：GitHub Releases / 新仓库 / CHANGELOG\n`
+      + `3. 技术社区：Hacker News、Reddit 技术版、知乎技术话题、B站技术向 UP 主\n`
+      + `4. 技术媒体与教程站：80.lv、GameFromScratch、GDC、开发者博客\n`
+      + `source 写成「站点名 · 类型」，例如「Unity 博客 · 官方」「GitHub · 新项目」「HN · 讨论」；同时给 sourceKey：official / github / community / media。\n\n`
+      + `【类型】kind 只取这 7 个值：\n`
+      + `1. release：引擎/工具/框架的官方发布与版本公告\n`
+      + `2. oss-launch：新出现的开源项目、工具、框架（首次开源或刚起步）\n`
+      + `3. tutorial：教程、上手指南、实战演示\n`
+      + `4. deep-dive：原理剖析、源码分析、架构长文\n`
+      + `5. paper：论文与预印本\n`
+      + `6. tool-update：已有工具的版本迭代与功能更新\n`
+      + `7. other：实在归不进上面六类，且仍有技术价值\n\n`
       + `【去重】同一事件只留一条，取信息量最大、来源更靠前的那篇。\n\n`
       + `每条整理：\n`
       + `- title：准确标题或准确译名\n- source：站点名 · 类型\n- sourceKey：official / github / community / media\n- kind：上表取值\n- url：http/https 原文链接，不得编造\n`
       + `- publishedAt：YYYY-MM-DD，未知留空\n- summary：中文一句话，不超过 60 字\n`
-      + `- aiSummary：100–180 字中文，说明发生了什么、关键数据、对读者的影响；卡片正文就展示它，别写成关键词堆砌\n\n`
+      + `- aiSummary：100–180 字中文，说明发生了什么、关键技术点、对开发者的影响；卡片正文就展示它，别写成关键词堆砌\n\n`
       + `不要编造 URL、标题或日期。完成后必须调用工具 workbench_news_publish，参数：\n`
       + `{"topicId":"${topic.id}","items":[...]}\n`
       + `一条都没有也调用一次，items 传空数组。不要输出其他内容。`
   }
+
   async function cronFetch(path: string, init?: RequestInit): Promise<any> {
     const res = await fetch(`/dsh-cron${path}`, {
       ...init,
@@ -2353,12 +2391,14 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       const status = topicStatus(topic)
       const next = topicNextRun(topic)
       const taskCount = topic.cronTaskIds.length
+      const failed = failedSources(topic)
       const running = newsTopicRunning(topic.id)
       return `<div class="news-topic-card">
         <div class="nt-top"><b>${esc(topic.title)}</b><span class="pill ${status.cls}">${status.label}</span></div>
         <div class="nt-query">${ic('search', 11)} ${esc(topic.query)}</div>
         <div class="nt-meta">${ic('clock', 11)} ${esc(topic.scheduleText || scheduleTextOf(topic.scheduleKind, topic.times, topic.weekday, topic.customCron))} · 每次 ${topic.count ?? 6} 条 · ${taskCount > 0 ? `${taskCount} 个任务` : '直连采集'}</div>
         <div class="nt-meta">${ic('calendar', 11)} 下次 ${fmtWhen(next)} · 上次入库 ${topic.lastRunAt ? ago(topic.lastRunAt) : '—'}</div>
+        ${failed.length > 0 ? `<div class="nt-meta" style="color:var(--red)">${ic('flag', 11)} ${failed.length} 个源上轮失败：${esc(failed.join('、'))}</div>` : ''}
         <div class="nt-actions">
           <button class="btn" data-act="news-run" data-id="${topic.id}" title="${taskCount > 0 ? '立即让 Agent 检索一次' : '立即直连采集一次'}" ${running ? 'disabled' : ''}>${ic('play', 12)}${running ? '检索中…' : '检索'}</button>
           <button class="btn" data-act="news-toggle" data-id="${topic.id}" title="${topic.enabled ? '暂停' : '恢复'}">${topic.enabled ? ic('pause', 12) : ic('play', 12)}${topic.enabled ? '暂停' : '恢复'}</button>
@@ -2527,7 +2567,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       })
       const data = await res.json().catch(() => ({})) as {
         ok?: boolean; error?: string; collected?: number; inserted?: number; skipped?: number
-        dropped?: { badUrl?: number; stale?: number; future?: number } | null
+        dropped?: { badUrl?: number; stale?: number; future?: number; offTopic?: number } | null
         runs?: Array<{ id: string; label?: string; count?: number; ms?: number; error?: string | null }>
       }
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`)
@@ -2537,14 +2577,21 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       const dropped = data.dropped
       const droppedTotal = dropped === null || dropped === undefined
         ? 0
-        : Number(dropped.badUrl ?? 0) + Number(dropped.stale ?? 0) + Number(dropped.future ?? 0)
+        : Number(dropped.badUrl ?? 0) + Number(dropped.stale ?? 0) + Number(dropped.future ?? 0) + Number(dropped.offTopic ?? 0)
       const failed = (data.runs ?? []).filter(r => typeof r.error === 'string' && r.error !== '')
       const failedNames = failed.map(r => r.label || r.id).join('、')
       let msg: string
       if (collected === 0 && failed.length > 0) msg = `采集失败：${failedNames}`
       else {
         msg = `采集 ${collected} 条，新增 ${inserted} 条，重复 ${skipped} 条`
-        if (droppedTotal > 0) msg += `，丢弃 ${droppedTotal} 条（过旧或无效）`
+        if (droppedTotal > 0) {
+          const offTopic = Number(dropped?.offTopic ?? 0)
+          // 分别说清「过期/无效」和「与技术无关」：前者是时间问题，后者是采集到偏题内容，用户能据此调检索词
+          const parts: string[] = []
+          if (droppedTotal - offTopic > 0) parts.push('过旧或无效 ' + (droppedTotal - offTopic))
+          if (offTopic > 0) parts.push('与技术无关 ' + offTopic)
+          msg += `，丢弃 ${droppedTotal} 条（${parts.join('，')}）`
+        }
         if (failed.length > 0) msg += `；失败源：${failedNames}`
       }
       toast(msg, failed.length > 0 || droppedTotal > 0 ? 5000 : 2600)
