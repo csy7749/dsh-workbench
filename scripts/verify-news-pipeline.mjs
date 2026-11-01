@@ -35,7 +35,7 @@ const host = await import(pathToFileURL(join(root, 'lib/index.js')).href)
    这些纯函数原本是模块私有的，为了能离线断言才改成导出。导出没了等于这一整批
    断言失去意义，所以先钉住它。 */
 console.log('\n[1] 构建产物导出')
-const need = ['normalizeNewsKind', 'NEWS_EVERGREEN_KINDS', 'isOffTopicNews', 'normalizeNewsUrl', 'newsEventKey', 'cleanNewsItemsDetailed', 'protectBrands', 'restoreBrands', 'clipText']
+const need = ['normalizeNewsKind', 'NEWS_EVERGREEN_KINDS', 'isOffTopicNews', 'normalizeNewsUrl', 'newsEventKey', 'cleanNewsItemsDetailed', 'protectBrands', 'restoreBrands', 'clipText', 'shouldCollectNow', 'planAutoCollect', 'createNewsCollectLock', 'runCollectSafely']
 for (const key of need) check(`导出 ${key}`, typeof host[key] === 'function' || Array.isArray(host[key]), typeof host[key])
 
 /* ---------- 2. kind 口径 ----------
@@ -204,6 +204,57 @@ const emojiText = '🎮🎮🎮🎮🎮🎮🎮🎮🎮🎮🎮🎮🎮🎮🎮�
 const emojiCut = host.clipText(emojiText, 5)
 check('emoji 不被切成半个字符', !emojiCut.includes('\uFFFD'), JSON.stringify(emojiCut))
 check('emoji 按码点计数截断', Array.from(emojiCut).length === 5, JSON.stringify(Array.from(emojiCut)))
+
+/* ---------- 9. 自动定时采集（批次 E） ----------
+   定时器本身没法离线跑（要等 6 小时），但它做判断的全是纯函数，逐个钉住：
+   到期/未到期、启动补采、锁冲突、异常不抛出。这四条错了就是「要么不采，要么采重复」。 */
+console.log('\n[9] 自动定时采集')
+const HOUR = 3_600_000
+const SIX_HOURS = 6 * HOUR
+check('默认间隔就是 6 小时', host.NEWS_AUTO_INTERVAL_MS === SIX_HOURS, String(host.NEWS_AUTO_INTERVAL_MS))
+const nowMs = Date.parse('2026-11-01T12:00:00+08:00')
+const stamp = (ms) => new Date(ms).toISOString()
+check('从没自动采过 → 该采（启动补采）', host.shouldCollectNow(null, nowMs, SIX_HOURS) === true)
+check('空串时间 → 该采', host.shouldCollectNow('', nowMs, SIX_HOURS) === true)
+check('坏时间串 → 该采（宁可多抓一次也别永久停更）', host.shouldCollectNow('not-a-date', nowMs, SIX_HOURS) === true)
+check('1 小时前采过 → 不到期', host.shouldCollectNow(stamp(nowMs - HOUR), nowMs, SIX_HOURS) === false)
+check('7 小时前采过 → 到期', host.shouldCollectNow(stamp(nowMs - 7 * HOUR), nowMs, SIX_HOURS) === true)
+check('正好 6 小时 → 到期（>= 不是 >）', host.shouldCollectNow(stamp(nowMs - SIX_HOURS), nowMs, SIX_HOURS) === true)
+check('间隔为 0 → 不采（配置错了也不能每轮狂抓）', host.shouldCollectNow(stamp(nowMs - HOUR), nowMs, 0) === false)
+
+/* 只有「启用 + 到期 + 没被锁」的订阅该采。用 lastAutoCollectAt 而不是 lastRunAt：
+   手动点一次检索不该把自动采集的节奏往后推。 */
+const PLAN = [
+  { id: 'due', enabled: true, lastAutoCollectAt: stamp(nowMs - 7 * HOUR) },
+  { id: 'fresh', enabled: true, lastAutoCollectAt: stamp(nowMs - HOUR) },
+  { id: 'never', enabled: true, lastAutoCollectAt: null },
+  { id: 'paused', enabled: false, lastAutoCollectAt: null },
+  { id: 'manual-only', enabled: 0, lastAutoCollectAt: null },
+  { id: 'busy', enabled: true, lastAutoCollectAt: null },
+  { id: 'manual-recent', enabled: true, lastAutoCollectAt: null, lastRunAt: stamp(nowMs - 60_000) },
+]
+const planned = host.planAutoCollect(PLAN, { now: nowMs, intervalMs: SIX_HOURS, isLocked: (id) => id === 'busy' })
+check('只挑启用且到期的订阅', planned.join(',') === 'due,never,manual-recent', planned.join(','))
+check('暂停的订阅不采', !planned.includes('paused'))
+check('上锁的订阅跳过', !planned.includes('busy'))
+check('手动采集不推迟自动采集', planned.includes('manual-recent'))
+
+/* 锁：手动「检索」和定时采集共用同一把，同一订阅同一时刻只允许一个采集在跑 */
+const lock = host.createNewsCollectLock()
+check('第一次抢锁成功', lock.tryAcquire('t1') === true)
+check('同一订阅再抢失败（手动与定时撞车）', lock.tryAcquire('t1') === false)
+check('别的订阅不受影响', lock.tryAcquire('t2') === true)
+check('两个订阅各占一把', lock.size() === 2, String(lock.size()))
+lock.release('t1')
+check('释放后可以再抢', lock.tryAcquire('t1') === true)
+check('锁状态如实反映', lock.isLocked('t1') === true && lock.isLocked('nope') === false)
+
+/* 异常不抛出：定时器里的任何异常逃出去都会变成 unhandledRejection，把宿主带下水 */
+const boom = await host.runCollectSafely(async () => { throw new Error('boom: 网络炸了') })
+check('采集异常被吃掉、不抛出', boom.ok === false, JSON.stringify(boom))
+check('异常信息被记下来', boom.error.includes('boom'), boom.error)
+const fine = await host.runCollectSafely(async () => ({ topicId: 't1', ok: true, inserted: 3 }))
+check('正常采集结果原样返回', fine.ok === true && fine.value?.inserted === 3, JSON.stringify(fine))
 
 console.log(`\n${pass}/${pass + fail} 通过`)
 if (fail > 0) process.exitCode = 1

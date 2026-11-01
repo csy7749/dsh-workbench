@@ -52,6 +52,10 @@ interface NewsTopic {
   /** 每源最近一次采集结果，键是 sourceId */
   sourceHealth?: Record<string, NewsSourceHealth>
   lastRunAt: string | null; createdAt: string; updatedAt: string
+  /** 上次「自动定时采集」的时间（与手动采集的 lastRunAt 分开记）；null = 还没自动采过 */
+  lastAutoCollectAt?: string | null
+  /** 上一次自动采集的结果（inserted/skipped/dropped/ms/error） */
+  lastAutoCollectResult?: { ok?: boolean; inserted?: number; collected?: number; error?: string; ms?: number } | null
 }
 interface NewsItem {
   id: string; topicId: string; title: string; url: string; source: string
@@ -2126,6 +2130,19 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       .filter((id) => health[id] && health[id].ok === false)
       .map((id) => NEWS_SOURCE_LABEL[id] ?? id)
   }
+  /**
+   * 自动采集时间：今天的只显示 HH:mm，更早的带日期。
+   * 卡片上一行小字，放完整 ISO 时间会挤掉别的信息。
+   */
+  function fmtCollectAt(value: string | null | undefined): string {
+    if (!value) return '—'
+    const at = Date.parse(String(value))
+    if (!Number.isFinite(at)) return '—'
+    const d = new Date(at)
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+    return new Date().toDateString() === d.toDateString() ? clock : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock}`
+  }
   function topicNextRun(topic: NewsTopic): number | null {
     let next: number | null = null
     for (const id of topic.cronTaskIds) {
@@ -2406,6 +2423,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
         <div class="nt-query">${ic('search', 11)} ${esc(topic.query)}</div>
         <div class="nt-meta">${ic('clock', 11)} ${esc(topic.scheduleText || scheduleTextOf(topic.scheduleKind, topic.times, topic.weekday, topic.customCron))} · 每次 ${topic.count ?? 6} 条 · ${taskCount > 0 ? `${taskCount} 个任务` : '直连采集'}</div>
         <div class="nt-meta">${ic('calendar', 11)} 下次 ${fmtWhen(next)} · 上次入库 ${topic.lastRunAt ? ago(topic.lastRunAt) : '—'}</div>
+        <div class="nt-meta">${ic('refresh', 11)} 上次自动采集 ${fmtCollectAt(topic.lastAutoCollectAt)}${topic.lastAutoCollectAt && topic.lastAutoCollectResult?.ok === false ? ` <span style="color:var(--red)">· 失败</span>` : ''}${topic.lastAutoCollectAt && topic.lastAutoCollectResult?.ok !== false && Number(topic.lastAutoCollectResult?.inserted ?? 0) > 0 ? ` · 新增 ${Number(topic.lastAutoCollectResult?.inserted)} 条` : ''}</div>
         ${failed.length > 0 ? `<div class="nt-meta" style="color:var(--red)">${ic('flag', 11)} ${failed.length} 个源上轮失败：${esc(failed.join('、'))}</div>` : ''}
         <div class="nt-actions">
           <button class="btn" data-act="news-run" data-id="${topic.id}" title="${taskCount > 0 ? '立即让 Agent 检索一次' : '立即直连采集一次'}" ${running ? 'disabled' : ''}>${ic('play', 12)}${running ? '检索中…' : '检索'}</button>

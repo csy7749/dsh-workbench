@@ -26,6 +26,16 @@ import { translateNewsItems } from './translate.js'
 export { protectBrands, restoreBrands } from './translate.js'
 /* 标题截断同理：给离线断言用，避免「按词边界截断」这类细节只能靠肉眼。 */
 export { clipText } from './news-sources.js'
+/* 自动定时采集的纯函数（到期判定/防重叠锁/异常不抛出）同样导出给离线脚本断言。
+   定时器本身在这里的 apply() 里起，不经过 HTTP、也不用 cron —— 宿主端口每次重启都变。 */
+export {
+  createNewsCollectLock, NEWS_AUTO_INTERVAL_MS, NEWS_AUTO_STARTUP_DELAY_MS,
+  planAutoCollect, shouldCollectNow, startNewsAutoCollect, runCollectSafely,
+} from './news-scheduler.js'
+import {
+  createNewsCollectLock, NEWS_AUTO_INTERVAL_MS, NEWS_AUTO_STARTUP_DELAY_MS,
+  startNewsAutoCollect, type AutoCollectRunResult,
+} from './news-scheduler.js'
 import { syncDelta, syncMeta, syncPush, writeTombstone, type SyncHooks } from './sync.js'
 import {
   clampText as clampGraphText, normalizeProductGraph, parseExternalRef, productGraphBytes,
@@ -513,6 +523,12 @@ class SqliteStore {
     if (!columns('news_topics').includes('kinds')) this.db.exec("ALTER TABLE news_topics ADD COLUMN kinds TEXT NOT NULL DEFAULT '[]'")
     if (!columns('news_topics').includes('per_source_limit')) this.db.exec('ALTER TABLE news_topics ADD COLUMN per_source_limit INTEGER NOT NULL DEFAULT 0')
     if (!columns('news_topics').includes('source_health')) this.db.exec("ALTER TABLE news_topics ADD COLUMN source_health TEXT NOT NULL DEFAULT '{}'")
+    /* 自动定时采集（2026-11-01）：单独记「上次自动采集」的时间与结果。
+       为什么不复用 last_run_at：手动点一次「检索」也写 last_run_at，
+       拿它判断到期会被人点勤了就永远等不到自动采集。
+       result 存 JSON（inserted/skipped/dropped/ms/error），卡片据此说清上一轮怎么样。 */
+    if (!columns('news_topics').includes('last_auto_collect_at')) this.db.exec('ALTER TABLE news_topics ADD COLUMN last_auto_collect_at TEXT')
+    if (!columns('news_topics').includes('last_auto_collect_result')) this.db.exec("ALTER TABLE news_topics ADD COLUMN last_auto_collect_result TEXT NOT NULL DEFAULT ''")
     this.migrateNewsKinds()
     if (!columns('news_items').includes('ai_summary')) this.db.exec("ALTER TABLE news_items ADD COLUMN ai_summary TEXT NOT NULL DEFAULT ''")
     /* 结构化来源与类型：source 是给人看的「站点 · 类型」文本，这两列是给筛选/统计用的枚举。
@@ -1005,6 +1021,20 @@ class SqliteStore {
       this.db.prepare('UPDATE news_topics SET source_health = ? WHERE id = ?').run(JSON.stringify(health ?? {}), topicId)
     } catch (cause) {
       console.warn('[dsh-workbench] 写入新闻源健康度失败（不影响采集）：', cause)
+    }
+  }
+
+  /**
+   * 记下「上一次自动采集」的时间与结果（批次 E）。
+   * 只写这两列：定时采集失败时也要能留下痕迹（卡片显示「上次自动采集」），
+   * 但绝不能顺手改到订阅的标题/排期。写失败只告警——记录失败不该影响下一轮采集。
+   */
+  updateNewsAutoCollect(topicId: string, at: string, result: Record<string, any>): void {
+    try {
+      this.db.prepare('UPDATE news_topics SET last_auto_collect_at = ?, last_auto_collect_result = ? WHERE id = ?')
+        .run(at, JSON.stringify(result ?? {}), topicId)
+    } catch (cause) {
+      console.warn('[dsh-workbench] 写入自动采集记录失败（不影响采集）：', cause)
     }
   }
 
@@ -3964,6 +3994,8 @@ class JsonStore {
       kinds: list(t.kinds).map((x: any) => normalizeNewsKind(x)).filter((k: string) => NEWS_KINDS.includes(k)),
       perSourceLimit: Number(t.perSourceLimit ?? 0),
       sourceHealth: t.sourceHealth ?? {},
+      lastAutoCollectAt: t.lastAutoCollectAt ?? null,
+      lastAutoCollectResult: t.lastAutoCollectResult ?? null,
     }))
     const items = this.newsItems.slice().sort((x, y) => String(y.fetchedAt).localeCompare(String(x.fetchedAt))).slice(0, 400)
       .map(i => ({ ...i, kind: normalizeNewsKind(i.kind), aiSummary: String(i.aiSummary ?? ''), titleZh: String(i.titleZh ?? ''), summaryZh: String(i.summaryZh ?? ''), heat: Number(i.heat ?? 0), heatKind: String(i.heatKind ?? ''), eventKey: String(i.eventKey ?? '') || newsEventKey(String(i.url ?? '')) }))
@@ -4013,6 +4045,8 @@ class JsonStore {
         : Math.max(0, Math.min(20, Math.round(num(input.perSourceLimit, 0)))),
       sourceHealth: existing?.sourceHealth ?? {},
       lastRunAt: existing?.lastRunAt ?? null,
+      lastAutoCollectAt: existing?.lastAutoCollectAt ?? null,
+      lastAutoCollectResult: existing?.lastAutoCollectResult ?? null,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
@@ -4051,6 +4085,15 @@ class JsonStore {
     const target: any = this.newsTopics.find(t => t.id === topicId)
     if (target === undefined) return
     target.sourceHealth = health ?? {}
+    this.persistNews()
+  }
+
+  /** 记下自动采集的时间与结果；与 SQLite 版同一契约。 */
+  updateNewsAutoCollect(topicId: string, at: string, result: Record<string, any>): void {
+    const target: any = this.newsTopics.find(t => t.id === topicId)
+    if (target === undefined) return
+    target.lastAutoCollectAt = at
+    target.lastAutoCollectResult = result ?? {}
     this.persistNews()
   }
 
@@ -5006,6 +5049,9 @@ function toNewsTopic(row: any): any {
     perSourceLimit: Number(row.per_source_limit ?? 0),
     sourceHealth: safeJson(row.source_health, {}),
     lastRunAt: row.last_run_at ?? null,
+    /* 自动定时采集（批次 E）：自动采集专用时间，与手动采集的 lastRunAt 互不干扰 */
+    lastAutoCollectAt: row.last_auto_collect_at ?? null,
+    lastAutoCollectResult: safeJson(row.last_auto_collect_result, null),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -6499,6 +6545,76 @@ function registerProductTools(ctx: any, store: SqliteStore | JsonStore): void {
 }
 
 export const name = 'dsh-workbench' 
+/**
+ * 采集一个订阅并入库 —— 手动「检索」按钮与自动定时采集**共用这一个入口**。
+ *
+ * 抽出来的原因有两个：①两条路必须走完全相同的源/类型/闸门/入库逻辑，
+ * 复制一份迟早会走偏；②定时器是进程内调用，不可能去拼 HTTP 请求打自己。
+ * 返回 {status, payload} 而不是直接写 res，这样调用方一个走 HTTP 一个走进程内。
+ */
+async function collectNewsForTopic(store: any, topicId: string, options: {
+  sourceIds?: any
+  limit?: any
+  perSourceLimit?: any
+  params?: Record<string, any>
+  translate?: boolean
+} = {}): Promise<{ status: number; payload: any }> {
+  const topic = store.listNews().topics.find((t: any) => t.id === topicId)
+  if (!topic) return { status: 404, payload: { error: 'unknown_topic', topicId } }
+  /* 源与类型：显式给了就用传进来的，否则用订阅自己配的（sources/kinds 为空 = 不限制） */
+  const askedSources = list(options.sourceIds).map((x) => str(x)).filter(Boolean)
+  const sourceIds = askedSources.length > 0 ? askedSources : list(topic.sources).map((x: any) => str(x)).filter(Boolean)
+  const limit = Math.max(1, Math.min(20, Math.round(num(options.limit, topic.count ?? 6))))
+  const params: Record<string, string> = { query: str(topic.query ?? '') }
+  const extra = options.params
+  if (extra && typeof extra === 'object') {
+    for (const [k, v] of Object.entries(extra)) params[str(k)] = str(v)
+  }
+  const result = await collectFromSources(sourceIds, limit, params, {
+    perSourceLimit: Number(options.perSourceLimit ?? topic.perSourceLimit ?? 0),
+    kinds: list(topic.kinds).map((x: any) => str(x)).filter(Boolean),
+  })
+  /* 每源最近一次结果落到订阅上（ok/error/ms/at）：卡片要能直接说清「哪个源挂了」，
+     不用让用户去翻宿主日志。写失败不影响本次采集。 */
+  const health: Record<string, any> = {}
+  const at = isoDateTime()
+  for (const run of result.runs) {
+    health[run.id] = run.error ? { ok: false, error: run.error, ms: run.ms, at } : { ok: true, error: '', ms: run.ms, at }
+  }
+  try { store.updateNewsSourceHealth(topicId, health) } catch { /* 健康度写失败不影响采集 */ }
+  /* 采集默认**不**自动翻译（2026-11-01 用户拍板改为按钮触发）。
+     理由：有道免费接口是「约 120 秒内 6 次」的硬配额，一次采集 10 条要
+     20 次请求，必然撞 411 并把整轮拖到 MyMemory。显式传 translate:true
+     仍可开启，给脚本/调试留口子。定时采集永远不传。 */
+  const wantTranslate = options.translate === true
+  const translated = wantTranslate && result.items.length > 0
+    ? await translateNewsItems(result.items.map((it) => ({ title: it.title, summary: it.summary })))
+    : null
+  // 源产出走与模型完全相同的清洗闸门（URL 合法性 / 枚举白名单 / 时效）
+  const raw = result.items.map((it, index) => ({
+    title: it.title, url: it.url, source: it.source, sourceKey: it.sourceKey,
+    kind: it.kind, publishedAt: it.publishedAt, summary: it.summary,
+    /* 热度与事件键都由采集器给出，这里原样往下传（清洗层只做量纲校验） */
+    heat: it.heat ?? 0, heatKind: it.heatKind ?? '',
+    titleZh: translated?.items[index]?.titleZh ?? '',
+    summaryZh: translated?.items[index]?.summaryZh ?? '',
+  }))
+  const published = store.publishNews(topicId, raw, limit)
+  return {
+    status: 200,
+    payload: {
+      ok: published.ok,
+      inserted: published.inserted,
+      skipped: published.skipped,
+      dropped: (published as any).dropped ?? null,
+      collected: result.total,
+      error: published.error,
+      translate: translated?.report ?? null,
+      runs: result.runs.map((r) => ({ id: r.id, label: r.label, count: r.items.length, ms: r.ms, error: r.error ?? null })),
+    },
+  }
+}
+
 export const inject = ['webServer', 'tools']
 
 export function apply(ctx: any): void {
@@ -6510,6 +6626,10 @@ export function apply(ctx: any): void {
     store = new JsonStore(dbFile.replace(/\.sqlite$/, '.json'))
   }
   console.log(`[dsh-workbench] ${store.engine} 存储就绪：${store.file}`)
+
+  /* 手动「检索」与自动定时采集共用这一把锁（批次 E）：同一订阅同一时刻只允许一个采集在跑。
+     内存锁就够——宿主单进程，重启时内存自然清空。 */
+  const newsLock = createNewsCollectLock()
 
   /*
    * 可选模块（灵感 / 智能体团队）必须彼此隔离：任意一个初始化失败都不能拖垮
@@ -7315,60 +7435,24 @@ export function apply(ctx: any): void {
           const body = await readJson(req)
           const topicId = str(body?.topicId).trim()
           if (topicId === '') { send(res, 400, { error: 'missing_topic' }); return }
-          const topic = store.listNews().topics.find((t: any) => t.id === topicId)
-          if (!topic) { send(res, 404, { error: 'unknown_topic', topicId }); return }
-          /* 源与类型：请求体显式给了就用请求体的，否则用订阅自己配的（sources/kinds 为空 = 不限制） */
-          const bodySources = list(body?.sourceIds).map((x) => str(x)).filter(Boolean)
-          const sourceIds = bodySources.length > 0 ? bodySources : list(topic.sources).map((x: any) => str(x)).filter(Boolean)
-          const limit = Math.max(1, Math.min(20, Math.round(num(body?.limit, topic.count ?? 6))))
-          const params: Record<string, string> = { query: str(topic.query ?? '') }
-          const extra = body?.params
-          if (extra && typeof extra === 'object') {
-            for (const [k, v] of Object.entries(extra)) params[str(k)] = str(v)
+          /* 手动「检索」与定时采集共用同一把锁（批次 E）：同一个订阅同一时刻只允许一个采集在跑。
+             撞上就明确回 409，不排队——排队会让用户以为按钮卡住了；定时采集那边遇到锁是跳过并记日志。 */
+          if (!newsLock.tryAcquire(topicId)) {
+            send(res, 409, { error: 'collect_running', message: '这个订阅正在采集中，请稍候' })
+            return
           }
-          const result = await collectFromSources(sourceIds, limit, params, {
-            perSourceLimit: Number(body?.perSourceLimit ?? topic.perSourceLimit ?? 0),
-            kinds: list(topic.kinds).map((x: any) => str(x)).filter(Boolean),
-          })
-          /* 每源最近一次结果落到订阅上（ok/error/ms/at）：卡片要能直接说清「哪个源挂了」，
-             不用让用户去翻宿主日志。写失败不影响本次采集。 */
-          const health: Record<string, any> = {}
-          const at = isoDateTime()
-          for (const run of result.runs) {
-            health[run.id] = run.error ? { ok: false, error: run.error, ms: run.ms, at } : { ok: true, error: '', ms: run.ms, at }
+          try {
+            const out = await collectNewsForTopic(store, topicId, {
+              sourceIds: body?.sourceIds,
+              limit: body?.limit,
+              perSourceLimit: body?.perSourceLimit,
+              params: body?.params,
+              translate: body?.translate === true,
+            })
+            send(res, out.status, out.payload)
+          } finally {
+            newsLock.release(topicId)
           }
-          try { store.updateNewsSourceHealth(topicId, health) } catch { /* 健康度写失败不影响采集 */ }
-          /* 中文译文：直连采集拿到的都是英文原文，而 cron 那条模型路径本来就产中文，
-             两条路混在一张信息流里会中英参半。translate=false 可跳过（离线调试/省额度）。
-             翻译失败不阻塞入库：原文照进，只是没有中文对照。 */
-          /* 采集默认**不**自动翻译（2026-11-01 用户拍板改为按钮触发）。
-             理由：有道免费接口是「约 120 秒内 6 次」的硬配额，一次采集 10 条要
-             20 次请求，必然撞 411 并把整轮拖到 MyMemory。显式传 translate:true
-             仍可开启，给脚本/调试留口子。 */
-          const wantTranslate = body?.translate === true
-          const translated = wantTranslate && result.items.length > 0
-            ? await translateNewsItems(result.items.map((it) => ({ title: it.title, summary: it.summary })))
-            : null
-          // 源产出走与模型完全相同的清洗闸门（URL 合法性 / 枚举白名单 / 时效）
-          const raw = result.items.map((it, index) => ({
-            title: it.title, url: it.url, source: it.source, sourceKey: it.sourceKey,
-            kind: it.kind, publishedAt: it.publishedAt, summary: it.summary,
-            /* 热度与事件键都由采集器给出，这里原样往下传（清洗层只做量纲校验） */
-            heat: it.heat ?? 0, heatKind: it.heatKind ?? '',
-            titleZh: translated?.items[index]?.titleZh ?? '',
-            summaryZh: translated?.items[index]?.summaryZh ?? '',
-          }))
-          const published = store.publishNews(topicId, raw, limit)
-          send(res, 200, {
-            ok: published.ok,
-            inserted: published.inserted,
-            skipped: published.skipped,
-            dropped: (published as any).dropped ?? null,
-            collected: result.total,
-            error: published.error,
-            translate: translated?.report ?? null,
-            runs: result.runs.map((r) => ({ id: r.id, label: r.label, count: r.items.length, ms: r.ms, error: r.error ?? null })),
-          })
           return
         }
         /* GitHub 公开检索代理：无需 token（未认证限额 ~10 次/分钟），供灵感采集用 */
@@ -7481,4 +7565,58 @@ export function apply(ctx: any): void {
   const route = { kind: 'prefix', path: PREFIX, handler }
   if (typeof ctx.effect === 'function') ctx.effect(() => webServer.register(route), 'workbench: /workbench-api')
   else webServer.register(route)
+
+  /* 自动定时采集（批次 E）：进程内定时器，到点直接调 collectNewsForTopic。
+     为什么不用 cron：宿主端口每次重启都会变，把端口写进 cron 的 http 任务必死；
+     走 HTTP 打自己也没有任何收益（同一进程内多绕一圈）。零外部依赖。
+     代价说清楚：只有 DSH 开着才采，关机期间不采，启动后靠第一轮（延迟 60 秒）补。 */
+  const autoCollect = startNewsAutoCollect({
+    store,
+    lock: newsLock,
+    intervalMs: NEWS_AUTO_INTERVAL_MS,
+    startupDelayMs: NEWS_AUTO_STARTUP_DELAY_MS,
+    onLog: (message: string) => console.log(`[dsh-workbench] ${message}`),
+    runCollect: async (topicId: string): Promise<AutoCollectRunResult> => {
+      const at = isoDateTime()
+      const started = Date.now()
+      try {
+        /* 不传 translate：自动采集只入库，翻译仍只走按钮（有道 2 分钟 6 次的额度耗不起） */
+        const out = await collectNewsForTopic(store, topicId, {})
+        const payload: any = out.payload ?? {}
+        if (out.status !== 200) {
+          const error = String(payload?.error ?? out.status)
+          store.updateNewsAutoCollect(topicId, at, { ok: false, error, ms: Date.now() - started })
+          return { topicId, ok: false, error }
+        }
+        store.updateNewsAutoCollect(topicId, at, {
+          ok: true,
+          inserted: payload.inserted ?? 0,
+          skipped: payload.skipped ?? 0,
+          collected: payload.collected ?? 0,
+          dropped: payload.dropped ?? null,
+          ms: Date.now() - started,
+        })
+        return { topicId, ok: true, inserted: payload.inserted ?? 0, collected: payload.collected ?? 0 }
+      } catch (cause) {
+        /* 采集整体炸了（网络/库）：把这次失败写进健康度与自动采集记录，再交给 runCollectSafely 吃掉。
+           **不重试**：GitHub 撞限额重试只会更糟，等下一周期。 */
+        const message = String((cause as Error)?.message ?? cause)
+        try {
+          const topic = store.listNews().topics.find((t: any) => t.id === topicId)
+          const ids = list(topic?.sources).map((x: any) => str(x)).filter(Boolean)
+          const failed: Record<string, any> = {}
+          for (const id of (ids.length > 0 ? ids : NEWS_SOURCES.map((s: any) => s.id))) {
+            failed[id] = { ok: false, error: message, ms: Date.now() - started, at }
+          }
+          store.updateNewsSourceHealth(topicId, failed)
+        } catch { /* 健康度写失败也不能让异常逃出去 */ }
+        try { store.updateNewsAutoCollect(topicId, at, { ok: false, error: message, ms: Date.now() - started }) } catch { /* 同上 */ }
+        throw cause
+      }
+    },
+  })
+  const disposeAutoCollect = (): void => { try { autoCollect.stop() } catch { /* 卸载清理不该再抛 */ } }
+  if (typeof ctx.effect === 'function') ctx.effect(() => disposeAutoCollect, 'workbench: news auto collect')
+  else if (typeof (ctx as any).on === 'function') (ctx as any).on('dispose', disposeAutoCollect)
+  console.log(`[dsh-workbench] 自动定时采集已排程：间隔 ${Math.round(NEWS_AUTO_INTERVAL_MS / 3600000)} 小时，启动后 ${Math.round(NEWS_AUTO_STARTUP_DELAY_MS / 1000)} 秒补采`)
 }
