@@ -146,6 +146,14 @@ check('版本对比可选 A/B', client.includes('idea-diff-a') && client.include
 check('底部悬浮导航已移除', !client.includes('wb-dock') && !client.includes('renderDock') && !client.includes('class="dock"'))
 check('顶栏含灵感模块名', /idea:\s*["']灵感["']/.test(client) && /idea:\s*["']研发["']/.test(client))
 check('旧灵感已移除', !client.includes('productInspiration') && !host.includes('workbench_inspiration_publish') && !client.includes('/products/inspirations'))
+check('客户端含资产库视图（嵌入本机资产库服务）', client.includes('wb-assets-root') && client.includes('wb-assets-frame') && client.includes('127.0.0.1:4173') && client.includes('assets-reload') && client.includes('assets-frame-wrap'))
+check('资产库视图可进入（侧栏/门户/命令面板）', client.includes('assets-mode') && /view:\s*["']assets["']/.test(client) && /assets:\s*["']Unity 资产库["']/.test(client) && /assets:\s*["']研发["']/.test(client))
+check('资产库视图为嵌入模式（不显示详情栏与内边距）', client.includes('assets-mode') && client.includes('.app.assets-mode .detail'))
+/* 自动代启：入口既然在工作台，就不该再让用户去终端敲 npm run start:web。
+   这两条钉住「前端只调接口、宿主才动子进程」的分工，以及失败时页面内给重试而不是教用户敲命令。 */
+check('资产库服务由宿主代启（前端调接口，不再提示手动命令）', client.includes('/assets/service') && !client.includes('npm run start:web') && client.includes('重试') && client.includes('assets-status'))
+check('宿主提供资产库服务路由与生命周期清理', /path === ["']\/assets\/service["']/.test(host) && host.includes('ensureAssetService') && host.includes('stopAssetService') && host.includes('asset-library-service'))
+check('代启不安装依赖（缺 tsx 时报错返回）', host.includes('pnpm install 后再重试') && !/spawn\(\s*['"](?:pnpm|npm)['"]/.test(host))
 check('无 TODO 占位符', !/TODO|PLACEHOLDER|FIXME/.test(client + host))
 
 let failed = 0

@@ -21,11 +21,20 @@ import { createIdeaModule, buildIdeaPrompt } from './idea.js'
 import { createAgentModule } from './agent.js'
 import { collectFromSources, NEWS_SOURCES } from './news-sources.js'
 import { translateNewsItems } from './translate.js'
+/* 资产库本机服务（4173）的按需拉起：进入「Unity 资产库」时由宿主代启，不再要求用户敲命令。 */
+import { ensureAssetService, getAssetServiceStatus, stopAssetService } from './asset-library-service.js'
 /* 翻译的纯函数对外导出：离线验证脚本（scripts/verify-news-translate.mjs）引用构建产物，
    测的就是真正上线的逻辑，不用复制一份镜像实现。 */
 export { protectBrands, restoreBrands } from './translate.js'
 /* 标题截断同理：给离线断言用，避免「按词边界截断」这类细节只能靠肉眼。 */
 export { clipText } from './news-sources.js'
+/* 资产库服务的生命周期对外导出：verify-asset-service.mjs 用它跑真正的启/停/重启，
+   而不是复制一份假实现——「服务退出后能不能自己起来」只有起真进程才测得到。
+   视图决策的几个纯函数一并导出，让「重绘不该反复请求」这类边界也能离线断言。 */
+export { ensureAssetService, getAssetServiceStatus, stopAssetService } from './asset-library-service.js'
+export {
+  phaseAfterProbe, shouldProbeOnEnter, shouldProbeOnReload, shouldReloadFrame,
+} from '../shared/asset-service-view.js'
 /* 自动定时采集的纯函数（到期判定/防重叠锁/异常不抛出）同样导出给离线脚本断言。
    定时器本身在这里的 apply() 里起，不经过 HTTP、也不用 cron —— 宿主端口每次重启都变。 */
 export {
@@ -951,6 +960,20 @@ class SqliteStore {
     const topics = this.db.prepare('SELECT * FROM news_topics ORDER BY created_at').all().map(toNewsTopic)
     const items = this.db.prepare('SELECT * FROM news_items ORDER BY fetched_at DESC, id DESC LIMIT 400').all().map(toNewsItem)
     return { topics, items }
+  }
+
+  /**
+   * 该订阅（或全部）已有条目的 URL —— 增量采集用。
+   *
+   * 为什么要单独一条方法而不是复用 listNews()：listNews() 有 LIMIT 400 且要跑
+   * toNewsItem 全字段映射；这里只需要 URL 字符串，采集路径上每轮都要读。
+   */
+  listNewsUrls(topicId?: string): string[] {
+    const wanted = str(topicId)
+    const rows = wanted === ''
+      ? this.db.prepare('SELECT url FROM news_items').all()
+      : this.db.prepare('SELECT url FROM news_items WHERE topic_id = ?').all(wanted)
+    return rows.map((row: any) => str(row?.url)).filter((u: string) => u !== '')
   }
 
   /**
@@ -4001,6 +4024,11 @@ class JsonStore {
       .map(i => ({ ...i, kind: normalizeNewsKind(i.kind), aiSummary: String(i.aiSummary ?? ''), titleZh: String(i.titleZh ?? ''), summaryZh: String(i.summaryZh ?? ''), heat: Number(i.heat ?? 0), heatKind: String(i.heatKind ?? ''), eventKey: String(i.eventKey ?? '') || newsEventKey(String(i.url ?? '')) }))
     return { topics, items }
   }
+  listNewsUrls(topicId?: string): string[] {
+    const wanted = str(topicId)
+    const rows = wanted === '' ? this.newsItems : this.newsItems.filter((i: any) => str(i?.topicId) === wanted)
+    return rows.map((i: any) => str(i?.url)).filter((u: string) => u !== '')
+  }
   updateNewsTranslation(rows: Array<{ id: string; titleZh: string; summaryZh: string }>): number {
     let changed = 0
     for (const row of rows) {
@@ -5122,10 +5150,13 @@ export function normalizeNewsKind(raw: unknown): string {
  * 今天看到依然有价值，用 14 天闸门会把它们全部误杀（实测 discovery 源
  * 候选创建时间普遍在 20–120 天，全被 stale 丢掉）。
  *
- * 2026-11-01 收紧：release 与 deep-dive 都**不**在常青清单里。
- * 版本发布是有时效的事件，三个月前的补丁说明就是过期信息；深度解析虽长文，但雷达看的是「最近在讨论什么」。
+ * 2026-11-01 曾把 deep-dive 移出常青清单（理由：雷达看的是「最近在讨论什么」）。
+ * 2026-11-02 改回来：HN 的技术帖现在全部按 deep-dive 计（news-sources.ts 的 collectHackerNews），
+ * 不在常青清单里就只能走 14 天闸门，而 HN 查询窗口是 120 天 —— 存量被整批判 stale，
+ * 表现就是「采集 12 条、新增 0 条」。release 仍然**不**常青：三个月前的补丁说明就是过期信息，
+ * 而引擎版本只走官方博客，那些条目本来就是新的。
  */
-export const NEWS_EVERGREEN_KINDS = ['oss-launch', 'tool-update', 'tutorial', 'paper']
+export const NEWS_EVERGREEN_KINDS = ['oss-launch', 'tool-update', 'tutorial', 'paper', 'deep-dive']
 /** 常规条目最大年龄（天）；常青类型放宽到 180 天。 */
 const NEWS_MAX_AGE_DAYS = 14
 const NEWS_MAX_AGE_DAYS_EVERGREEN = 180
@@ -6570,10 +6601,19 @@ async function collectNewsForTopic(store: any, topicId: string, options: {
   if (extra && typeof extra === 'object') {
     for (const [k, v] of Object.entries(extra)) params[str(k)] = str(v)
   }
+  /* 「已经看过」的 URL＝这个订阅库里已有的条目。
+     必须交给采集器、在**配额分配之前**剔掉，不能指望入库时被 UNIQUE(topic_id, hash) 挡下：
+     各源都是「取排序最前那批」，而最前面那批恰好就是上一轮已经入库的那批，
+     于是每轮挑出来的都是同一批，表现出「采集 12 条 / 新增 1 条 / 重复 8 条」。 */
+  let seenUrls: string[] = []
+  try { seenUrls = store.listNewsUrls(topicId) } catch { seenUrls = [] /* 读失败就当没有存量，最多是多几条重复 */ }
   const result = await collectFromSources(sourceIds, limit, params, {
     perSourceLimit: Number(options.perSourceLimit ?? topic.perSourceLimit ?? 0),
     kinds: list(topic.kinds).map((x: any) => str(x)).filter(Boolean),
+    excludeUrls: seenUrls,
   })
+  /* 被「已经看过」挡掉的候选总数：卡片上要说清「不是源没料，是这些都已经看过了」 */
+  const excluded = result.runs.reduce((sum: number, run: any) => sum + Number(run.excluded ?? 0), 0)
   /* 每源最近一次结果落到订阅上（ok/error/ms/at）：卡片要能直接说清「哪个源挂了」，
      不用让用户去翻宿主日志。写失败不影响本次采集。 */
   const health: Record<string, any> = {}
@@ -6608,9 +6648,15 @@ async function collectNewsForTopic(store: any, topicId: string, options: {
       skipped: published.skipped,
       dropped: (published as any).dropped ?? null,
       collected: result.total,
+      /* 候选里「已经看过」被跳过的条数：与 skipped（入库撞 UNIQUE）不是一回事，
+         前者说明增量采集在正常工作，后者说明上游没拦住重复。 */
+      excluded,
       error: published.error,
       translate: translated?.report ?? null,
-      runs: result.runs.map((r) => ({ id: r.id, label: r.label, count: r.items.length, ms: r.ms, error: r.error ?? null })),
+      runs: result.runs.map((r) => ({
+        id: r.id, label: r.label, count: r.items.length, ms: r.ms, error: r.error ?? null,
+        fetched: r.fetched ?? r.items.length, excluded: r.excluded ?? 0,
+      })),
     },
   }
 }
@@ -6756,6 +6802,19 @@ export function apply(ctx: any): void {
             send(res, 200, await serialized(() => syncPush(db, body, store as unknown as SyncHooks)))
             return
           }
+        }
+        /* 资产库本机服务：GET 只探测（不产生副作用），POST 才按需拉起。
+           分开两个动词是为了让前端挂载时可以安全地「问一句」，重复调用不会起第二个进程
+           （ensureAssetService 内部还有在飞 Promise 去重）。
+           失败一律 200 返回带 lastError 的状态：这是「服务没起来」而不是「接口坏了」，
+           前端要的是原因与重试按钮，不是 HTTP 错误码。 */
+        if (method === 'GET' && path === '/assets/service') {
+          send(res, 200, await getAssetServiceStatus())
+          return
+        }
+        if (method === 'POST' && path === '/assets/service') {
+          send(res, 200, await ensureAssetService())
+          return
         }
         if (method === 'GET' && path === '/news') {
           send(res, 200, store.listNews())
@@ -7593,6 +7652,8 @@ export function apply(ctx: any): void {
           inserted: payload.inserted ?? 0,
           skipped: payload.skipped ?? 0,
           collected: payload.collected ?? 0,
+          /* 候选里「已经看过」的条数：订阅卡上要能区分「没新内容」和「源没料」 */
+          excluded: payload.excluded ?? 0,
           dropped: payload.dropped ?? null,
           ms: Date.now() - started,
         })
@@ -7619,4 +7680,12 @@ export function apply(ctx: any): void {
   if (typeof ctx.effect === 'function') ctx.effect(() => disposeAutoCollect, 'workbench: news auto collect')
   else if (typeof (ctx as any).on === 'function') (ctx as any).on('dispose', disposeAutoCollect)
   console.log(`[dsh-workbench] 自动定时采集已排程：间隔 ${Math.round(NEWS_AUTO_INTERVAL_MS / 3600000)} 小时，启动后 ${Math.round(NEWS_AUTO_STARTUP_DELAY_MS / 1000)} 秒补采`)
+
+  /* 资产库服务只在「进入视图时按需拉起」，所以卸载时只收自己拉起的那个进程；
+     用户自己开的实例（ownedByUs=false 的那条路径）不归我们管，别误杀。
+     stopAssetService 现在是 async（要等子进程真退出），dispose 是同步钩子，
+     所以显式弃掉 Promise 并吃掉 rejection——卸载路径上抛出去会变成 unhandledRejection。 */
+  const disposeAssetService = (): void => { void stopAssetService().catch(() => { /* 卸载清理不该再抛 */ }) }
+  if (typeof ctx.effect === 'function') ctx.effect(() => disposeAssetService, 'workbench: asset library service')
+  else if (typeof (ctx as any).on === 'function') (ctx as any).on('dispose', disposeAssetService)
 }

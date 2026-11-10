@@ -17,6 +17,12 @@ import {
   PRODUCT_KIND_COLOR, PRODUCT_KIND_LABEL, toMindElixir,
   type IdeaLikeGraph, type ProductMapGraph, type ProductMapNode, type ProductNodeKind,
 } from '../shared/product-graph-model'
+/* 资产库视图「要不要复查服务」的判断抽在 shared 里：纯函数才能离线断言，
+   这两条边界（首次就绪后服务退出、renderAll 反复请求）光靠肉眼看不住。 */
+import {
+  phaseAfterProbe, shouldProbeOnEnter, shouldProbeOnReload, shouldReloadFrame,
+  type AssetServicePhase,
+} from '../shared/asset-service-view'
 
 const API = '/workbench-api'
 
@@ -180,7 +186,7 @@ interface DB { spaces: Space[]; tasks: Task[]; focus: FocusSession[]; settings: 
 interface Health { ok: boolean; engine: string; file: string; sqlite?: string; revision: number; tasks: number; spaces: number; focus: number }
 
 interface Ui {
-  view: 'portal' | 'board' | 'list' | 'timeline' | 'matrix' | 'calendar' | 'focus' | 'stats' | 'news' | 'notes' | 'bugs' | 'product' | 'ui' | 'demo' | 'test' | 'idea'
+  view: 'portal' | 'board' | 'list' | 'timeline' | 'matrix' | 'calendar' | 'focus' | 'stats' | 'news' | 'notes' | 'bugs' | 'product' | 'ui' | 'demo' | 'test' | 'idea' | 'assets'
   /** 当前项目范围：'all' 全部 / 'none' 未归属 / 其余为 DSH 工作区绝对路径。 */
   project: string
   scope: 'today' | 'all'
@@ -226,7 +232,7 @@ const SIDE_DEFAULT_NARROW = 190
  */
 const PORTAL_GROUPS: Array<{ id: string; title: string; hint: string; views: Array<Ui['view']> }> = [
   { id: 'work', title: '工作', hint: '任务、日程与沉淀', views: ['list', 'board', 'calendar', 'stats', 'focus', 'notes', 'news'] },
-  { id: 'rd', title: '研发', hint: '产品设计、UI 设计、DEMO、缺陷、测试与灵感', views: ['product', 'ui', 'demo', 'bugs', 'test', 'idea'] },
+  { id: 'rd', title: '研发', hint: '产品设计、UI 设计、DEMO、缺陷、测试、灵感与资产库', views: ['product', 'ui', 'demo', 'bugs', 'test', 'idea', 'assets'] },
 ]
 
 /* ------------------------------- 时间工具 ------------------------------- */
@@ -960,13 +966,14 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       app.classList.toggle('collapsed', ui.collapsed)
       app.classList.toggle('compact', ui.compact)
       app.classList.toggle('focus-expand', ui.view === 'focus' && ui.focusExpand)
-      app.classList.toggle('no-detail', ['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test'].includes(ui.view))
+      app.classList.toggle('no-detail', ['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets'].includes(ui.view))
     }
     renderSidebar()
     renderTopbar()
     renderContent()
     renderDetail()
     syncIdeaView()
+    syncAssetsView()
   }
   function renderSidebar(): void {
     const ts = todayStats()
@@ -1021,6 +1028,10 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
         '<div class="side-sub" style="padding:3px 8px 6px">按主题、按时间用 DSH Agent 检索</div>' +
         sideItem('新闻检索', { icon: 'news', view: 'news', active: true }) +
         sideItem('新增订阅', { icon: 'plus', act: 'news-add' }))
+    } else if (ui.view === 'assets') {
+      context = sideGroup('资产库', null,
+        '<div class="side-sub" style="padding:3px 8px 6px">浏览本机 Unity 已购资产</div>' +
+        sideItem('Unity 资产库', { icon: 'layers', view: 'assets', active: true }))
     } else if (ui.view === 'idea') {
       context = sideGroup('灵感', null,
         '<div class="side-sub" style="padding:3px 8px 6px">中间一栏管理灵感；画布可在导图 / 力导之间切换</div>' +
@@ -1064,6 +1075,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
           ${sideItem('Bug 管理', { icon: 'bug', view: 'bugs', active: ui.view === 'bugs' })}
           ${sideItem('测试', { icon: 'test', view: 'test', active: ui.view === 'test' })}
           ${sideItem('灵感', { icon: 'spark', view: 'idea', active: ui.view === 'idea' })}
+          ${sideItem('Unity 资产库', { icon: 'layers', view: 'assets', active: ui.view === 'assets' })}
         </div>
         ${ui.view === 'portal' ? '' : `<div class="side-sec"><div class="side-head">空间<button class="add" data-act="space-add" title="新建空间">${ic('plus', 13)}</button></div>${spaces}</div>`}
       </div>
@@ -1098,6 +1110,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       { id: 'product', label: '产品设计', hint: '导图/模块/笔记/Demo', icon: 'product', view: 'product' },
       { id: 'test', label: '测试', hint: '用例/执行/报告', icon: 'test', view: 'test' },
       { id: 'idea', label: '灵感', hint: '发散成导图 / 力导图', icon: 'spark', view: 'idea' },
+      { id: 'assets', label: 'Unity 资产库', hint: '本地已购资产', icon: 'layers', view: 'assets' },
       { id: 'new-task', label: '新建任务', hint: '⌘N', icon: 'plus', action: 'new' },
       { id: 'new-note', label: '新建笔记', hint: '记事本', icon: 'plus', action: 'note-new' },
       { id: 'new-bug', label: '新建 Bug', hint: '质量管理', icon: 'plus', action: 'bug-new' },
@@ -1151,11 +1164,12 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   /* ---------- 内容 ---------- */
   const FILTER_LABEL: Record<Ui['filter'], string> = { all: '筛选', high: '高优先级', sub: '有子待办', attach: '有附件', unscheduled: '未排时间' }
   const SORT_LABEL: Record<Ui['sort'], string> = { time: '按时间', priority: '按优先级', created: '按创建', title: '按标题' }
-  const MODULE_OF: Record<Ui['view'], string> = { portal: '工作台', board: '任务', list: '任务', timeline: '计划', matrix: '任务', calendar: '计划', focus: '专注', stats: '统计', news: '新闻', notes: '记事本', bugs: 'Bug 管理', product: '产品设计', ui: 'UI 设计', demo: 'DEMO', test: '测试', idea: '研发' }
-  const NAME_OF: Record<Ui['view'], string> = { portal: '项目门户', board: '看板', list: '行动清单', timeline: '时间轴', matrix: '四象限', calendar: '日历', focus: '当前专注', stats: '数据复盘', news: '新闻检索', notes: '笔记', bugs: '质量管理', product: '产品', test: '测试', idea: '灵感', ui: 'UI 设计', demo: 'DEMO' }
+  const MODULE_OF: Record<Ui['view'], string> = { portal: '工作台', board: '任务', list: '任务', timeline: '计划', matrix: '任务', calendar: '计划', focus: '专注', stats: '统计', news: '新闻', notes: '记事本', bugs: 'Bug 管理', product: '产品设计', ui: 'UI 设计', demo: 'DEMO', test: '测试', idea: '研发', assets: '研发' }
+  const NAME_OF: Record<Ui['view'], string> = { portal: '项目门户', board: '看板', list: '行动清单', timeline: '时间轴', matrix: '四象限', calendar: '日历', focus: '当前专注', stats: '数据复盘', news: '新闻检索', notes: '笔记', bugs: '质量管理', product: '产品', test: '测试', idea: '灵感', assets: 'Unity 资产库', ui: 'UI 设计', demo: 'DEMO' }
 
   function renderContent(): void {
     if (ui.view === 'idea') { syncIdeaView(); return }
+    if (ui.view === 'assets') { syncAssetsView(); return }
     const el = $id('wb-generic') ?? content()
     if (!el) return
     if (!loaded) {
@@ -1519,6 +1533,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       { view: 'bugs', title: 'Bug 管理', desc: '缺陷看板与 AI 修复', icon: 'bug', count: scopeBugs, tile: '#d83b3b' },
       { view: 'test', title: '测试', desc: '用例 / 执行 / 回归', icon: 'test', count: scopeTests, tile: '#0891b2' },
       { view: 'idea', title: '灵感', desc: '多角度发散 · 导图 / 力导', icon: 'spark', count: null, tile: '#5b5bd6' },
+      { view: 'assets', title: 'Unity 资产库', desc: '浏览本地已购资产', icon: 'layers', count: null, tile: '#0f766e' },
       { view: 'product', title: '产品设计', desc: '导图 / 模块 / 设计文档', icon: 'product', count: null, tile: '#5b5bd6' },
       { view: 'ui', title: 'UI 设计', desc: '页面清单 · 规范 · 线框', icon: 'layout', count: null, tile: '#4f46e5' },
       { view: 'demo', title: 'DEMO', desc: '可交互原型 · 版本 · 按页优化', icon: 'play', count: null, tile: '#0ea5e9' },
@@ -1697,6 +1712,117 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (root !== null) root.style.display = on ? '' : 'none'
     if (on) ensureIdeaView()?.show()
     else ideaView?.hide()
+  }
+
+  /* 资产库服务由宿主代启（GET /assets/service 只探测，POST 才拉起），前端只负责三件事：
+     进入/刷新时复查、启动中给反馈、失败时把原因摆出来并给重试。
+     不再出现「请先在资产库目录运行 npm run start:web」这类教用户敲命令的提示。 */
+  let assetsPhase: AssetServicePhase = 'idle'
+  let assetsError = ''
+  let assetsUrl = 'http://127.0.0.1:4173/'
+  /* 上一次 renderAll 时是否停在资产库视图：用来区分「进入」与「重绘」，
+     否则每次重绘都复查一次，会对着宿主狂刷请求。 */
+  let assetsViewWasOn = false
+  /* 操作序号：连着点两次重试，只有最后一次的结果能落地（先返回的旧响应不许覆盖新状态）。 */
+  let assetsOp = 0
+
+  function assetsShell(): string {
+    return `<div class="assets-toolbar"><div><b>Unity 资产库</b><span>本机资产库服务 · <span id="wb-assets-url">${esc(assetsUrl)}</span></span></div><div class="assets-actions"><button class="btn" data-act="assets-reload" title="重新载入资产库">${ic('refresh', 13)}刷新</button><a class="btn" id="wb-assets-open" href="${esc(assetsUrl)}" target="_blank" rel="noopener noreferrer" title="在新标签打开资产库">${ic('arrowR', 13)}新标签打开</a></div></div><div class="assets-body" id="wb-assets-body"></div>`
+  }
+
+  /** 重载 iframe：同址重赋值在部分内核不真重载，靠查询串换一个（资产库是静态页，查询串无副作用）。 */
+  function reloadAssetsFrame(): void {
+    const frame = $id<HTMLIFrameElement>('wb-assets-frame')
+    if (frame !== null) frame.src = `${assetsUrl}?t=${Date.now()}`
+  }
+
+  function renderAssetsBody(): void {
+    const body = $id('wb-assets-body')
+    if (body === null) return
+    const open = $id<HTMLAnchorElement>('wb-assets-open')
+    if (open !== null) open.href = assetsUrl
+    const urlText = $id('wb-assets-url')
+    if (urlText !== null) urlText.textContent = assetsUrl
+    if (assetsPhase === 'ready') {
+      /* 先确保 iframe 在：切到失败态再重试成功时，要把状态面板换回页面。 */
+      if (body.querySelector('#wb-assets-frame') === null) {
+        body.innerHTML = `<div class="assets-frame-wrap"><iframe id="wb-assets-frame" src="${esc(assetsUrl)}" title="Unity 资产库"></iframe></div>`
+      }
+      return
+    }
+    if (assetsPhase === 'failed') {
+      body.innerHTML = `<div class="assets-status"><h4>${ic('bell', 14)}资产库服务没能启动</h4><p class="assets-status-reason">${esc(assetsError)}</p><div class="assets-status-actions"><button class="btn primary" data-act="assets-reload">${ic('refresh', 13)}重试</button><a class="btn" href="${esc(assetsUrl)}" target="_blank" rel="noopener noreferrer">在浏览器里直接打开</a></div></div>`
+      return
+    }
+    body.innerHTML = `<div class="assets-status"><h4>${ic('refresh', 14)}正在启动资产库服务…</h4><p class="assets-status-reason">本机 ${esc(assetsUrl)}，首次启动要编译页面，通常 3–6 秒。</p></div>`
+  }
+
+  /**
+   * 复查服务，必要时请宿主拉起。进入视图与点「刷新」都走这里——
+   * 这是「服务退出后能自己恢复」的唯一路径：先 GET 探测（无副作用、快），
+   * 确认没在跑才 POST 触发启动，避免每次进入都白跑一次启动流程。
+   */
+  async function refreshAssets(mode: 'enter' | 'reload'): Promise<void> {
+    const allowed = mode === 'enter' ? shouldProbeOnEnter(true, assetsPhase) : shouldProbeOnReload(assetsPhase)
+    if (!allowed) return
+    const op = ++assetsOp
+    try {
+      const probeRes = await fetch(`${API}/assets/service`)
+      const probe = await probeRes.json() as { running?: boolean; url?: string }
+      if (op !== assetsOp) return
+      if (typeof probe.url === 'string' && probe.url !== '') assetsUrl = probe.url
+      if (probe.running === true) {
+        const wantReload = shouldReloadFrame(mode, assetsPhase, true)
+        assetsPhase = phaseAfterProbe(true)
+        assetsError = ''
+        renderAssetsBody()
+        if (wantReload) reloadAssetsFrame()
+        return
+      }
+      /* 没在跑：切到启动中再 POST。失败原因由宿主给（stderr 尾巴/缺依赖/超时）。 */
+      assetsPhase = 'starting'
+      assetsError = ''
+      renderAssetsBody()
+      const startRes = await fetch(`${API}/assets/service`, { method: 'POST' })
+      const data = await startRes.json() as { ok?: boolean; running?: boolean; url?: string; lastError?: string }
+      if (op !== assetsOp) return
+      if (typeof data.url === 'string' && data.url !== '') assetsUrl = data.url
+      if (data.ok === true || data.running === true) {
+        assetsPhase = phaseAfterProbe(true)
+        assetsError = ''
+      } else {
+        assetsPhase = phaseAfterProbe(false)
+        assetsError = typeof data.lastError === 'string' && data.lastError !== '' ? data.lastError : '宿主没有返回具体原因。'
+      }
+      renderAssetsBody()
+    } catch (cause) {
+      if (op !== assetsOp) return
+      assetsPhase = 'failed'
+      assetsError = `无法连接工作台宿主（${String((cause as Error)?.message ?? cause)}）。宿主接口不可用时资产库服务也无人代启。`
+      renderAssetsBody()
+    }
+  }
+
+  function syncAssetsView(): void {
+    const on = ui.view === 'assets'
+    /* 进入 = 这一帧在资产库、上一帧不在。只有进入才复查，重绘不查。 */
+    const entering = on && !assetsViewWasOn
+    assetsViewWasOn = on
+    $id('wb-app')?.classList.toggle('assets-mode', on)
+    const generic = $id('wb-generic')
+    const root = $id('wb-assets-root')
+    /* generic 的恢复由 syncIdeaView 统一负责（renderAll 里先跑它），这里只叠加「资产库模式下隐藏」，
+       否则会与灵感模式的 generic 隐藏互相覆盖。 */
+    if (generic !== null && on) generic.style.display = 'none'
+    if (root === null) return
+    root.style.display = on ? '' : 'none'
+    if (on && root.childElementCount === 0) {
+      root.innerHTML = assetsShell()
+      renderAssetsBody()
+    }
+    /* 每次重新进入都复查：服务可能在离开期间退出，而这里的状态还停在 ready。
+       宿主侧会复用已在跑的实例，所以复查本身不会起第二个进程。 */
+    if (entering) void refreshAssets('enter')
   }
 
   function renderBoard(): string {
@@ -2625,14 +2751,16 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
         body: JSON.stringify({ topicId: id }),
       })
       const data = await res.json().catch(() => ({})) as {
-        ok?: boolean; error?: string; collected?: number; inserted?: number; skipped?: number
+        ok?: boolean; error?: string; collected?: number; inserted?: number; skipped?: number; excluded?: number
         dropped?: { badUrl?: number; stale?: number; future?: number; offTopic?: number } | null
-        runs?: Array<{ id: string; label?: string; count?: number; ms?: number; error?: string | null }>
+        runs?: Array<{ id: string; label?: string; count?: number; ms?: number; error?: string | null; excluded?: number }>
       }
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`)
       const collected = Number(data.collected ?? 0)
       const inserted = Number(data.inserted ?? 0)
       const skipped = Number(data.skipped ?? 0)
+      /* 候选里「已经看过」被跳过的条数（服务端在配额分配前就剔掉了，与 skipped 不是一回事） */
+      const excluded = Number(data.excluded ?? 0)
       const dropped = data.dropped
       const droppedTotal = dropped === null || dropped === undefined
         ? 0
@@ -2641,8 +2769,16 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       const failedNames = failed.map(r => r.label || r.id).join('、')
       let msg: string
       if (collected === 0 && failed.length > 0) msg = `采集失败：${failedNames}`
-      else {
-        msg = `采集 ${collected} 条，新增 ${inserted} 条，重复 ${skipped} 条`
+      else if (collected === 0 && inserted === 0) {
+        /* 「一条都没有」要说清原因：候选全看过 ≠ 源没发新东西 ≠ 全被清洗丢弃。
+           以前这里统一报「采集 0 条，新增 0 条，重复 0 条」，读起来像采集器坏了。 */
+        if (excluded > 0) msg = `没有新内容：${excluded} 条候选都已经看过`
+        else if (droppedTotal > 0) msg = `没有可用内容：${droppedTotal} 条候选未通过清洗（过旧或与技术无关）`
+        else msg = '没有新内容：订阅的源这段时间没有发新条目'
+      } else {
+        msg = `采集 ${collected} 条，新增 ${inserted} 条`
+        if (excluded > 0) msg += `（已跳过看过的 ${excluded} 条）`
+        if (skipped > 0) msg += `，重复 ${skipped} 条`
         if (droppedTotal > 0) {
           const offTopic = Number(dropped?.offTopic ?? 0)
           // 分别说清「过期/无效」和「与技术无关」：前者是时间问题，后者是采集到偏题内容，用户能据此调检索词
@@ -7753,7 +7889,7 @@ ${lines}`
   function renderDetail(): void {
     const el = detail()
     if (!el) return
-    const show = !['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test'].includes(ui.view)
+    const show = !['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets'].includes(ui.view)
     el.classList.toggle('hide', !show)
     if (!show) { el.innerHTML = ''; return }
     const t = selectedTask()
@@ -8696,6 +8832,12 @@ ${lines}`
         void loadTests(true).then(() => { toast('在「执行」页点「回归失败用例」验证修复') })
         return
       }
+      if (act === 'assets-reload') {
+        /* 「刷新」两种语义合一：服务还在跑就只重载 iframe；已经退出（或上次启动失败）
+           就复查并重新拉起。这一切都走 refreshAssets，前端不再自己判断服务状态。 */
+        void refreshAssets('reload')
+        return
+      }
       if (act === 'cmd') { openCommandPalette(); return }
       if (act === 'cmd-go') {
         const view = actEl.getAttribute('data-view') ?? ''
@@ -9195,7 +9337,7 @@ const SHELL = `
   <div class="main">
     <header class="topbar" id="wb-topbar"></header>
     <div class="workspace">
-      <section class="content" id="wb-content"><div id="wb-generic"></div><div id="wb-idea-root" style="display:none"></div></section>
+      <section class="content" id="wb-content"><div id="wb-generic"></div><div id="wb-idea-root" style="display:none"></div><div id="wb-assets-root" style="display:none"></div></section>
       <aside class="detail" id="wb-detail"></aside>
     </div>
   </div>

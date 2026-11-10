@@ -62,6 +62,10 @@ export type SourceRun = {
   items: RawNewsItem[]
   error?: string
   ms: number
+  /** 源侧这次抓到的候选总条数（「已看过」过滤之前），用来说清「是源没料，还是要的都已经看过了」 */
+  fetched?: number
+  /** 其中因为「库里已经有」被跳过的条数（增量采集，见 CollectOptions.excludeUrls） */
+  excluded?: number
 }
 
 export type SourceDescriptor = {
@@ -457,8 +461,11 @@ async function collectGithubDiscovery(limit: number, params: Record<string, stri
   const since = new Date(Date.now() - windowDays * 86_400_000).toISOString().slice(0, 10)
   const queries = DISCOVERY_QUERIES.slice(0, maxQueries)
 
+  /* 每页 30 条起（上限 100）：按 star 增速排序后最前面那几条几乎固定是同一批，
+     只要 15 条的话，增量采集把老的剔掉就什么都不剩了。 */
+  const perPage = Math.min(100, Math.max(30, limit))
   const results = await Promise.allSettled(
-    queries.map((item) => searchRepos(`${item.q} created:>${since} fork:false stars:>=${minStars}`, 15)),
+    queries.map((item) => searchRepos(`${item.q} created:>${since} fork:false stars:>=${minStars}`, perPage)),
   )
 
   const errors: string[] = []
@@ -612,7 +619,9 @@ async function collectHackerNews(limit: number, params: Record<string, string>):
   const days = Math.max(7, Math.min(180, Math.round(Number(params.days ?? 120) || 120)))
   const minPoints = Math.max(0, Math.min(500, Math.round(Number(params.minPoints ?? 5) || 0)))
   const since = Math.floor((Date.now() - days * 86400e3) / 1000)
-  const perQuery = Math.min(20, Math.max(5, limit))
+  /* 每查询取 20–50 条：增量采集要在去掉「已经看过的」之后还剩下新内容，
+     Algolia 一页给 5–20 条时，最热的那几条基本就是上一轮已经入库的那几条。 */
+  const perQuery = Math.min(50, Math.max(20, limit))
 
   const results = await Promise.allSettled(
     HN_QUERIES.map(async (item) => {
@@ -643,13 +652,18 @@ async function collectHackerNews(limit: number, params: Record<string, string>):
           const hnLink = `https://news.ycombinator.com/item?id=${String(h.objectID ?? '')}`
           const points = Number(h.points ?? 0)
           const comments = Number(h.num_comments ?? 0)
+          /* Show HN + Go 到 GitHub 仓库＝有人在发布东西，按开源首发算；其余技术帖按深度解析算。 */
+          const isShowAndOss = /show hn/i.test(String(h.title)) && /github\.com/i.test(String(h.url || ''))
           return {
             // 带上 points 与评论数：这是本设计要的「热度」，比标题本身更能说明值不值得看
             title: `${plainText(String(h.title), 300)} · ${points}★ ${comments} 评论`,
             url: String(h.url || hnLink),
             source: item.label,
             sourceKey: 'community',
-            kind: 'other',
+            /* 2026-11-02：原来一律标 'other'，而 'other' 不在 NEWS_EVERGREEN_KINDS 里，
+               于是 HN 全部走 14 天闸门 —— 120 天窗口里的存量基本被整批判 stale，等于没有增量。
+               HN 的技术帖形态本来就是「深度解析」，Show HN + GitHub 链接是开源发布。 */
+            kind: isShowAndOss ? 'oss-launch' : 'deep-dive',
             publishedAt: toDateOnly(String(h.created_at ?? '')),
             summary: plainText(`${points} 分 · ${comments} 条讨论 · ${String(h.url || hnLink)}`, 600),
             /* 热度＝HN 分数（评论数已写进摘要，不再单列一个量纲） */
@@ -752,12 +766,22 @@ export type CollectResult = {
   total: number
 }
 
-/** 单次采集的可选约束：每源条数、内容类型白名单。 */
+/** 单次采集的可选约束：每源条数、内容类型白名单、「已经看过」的 URL。 */
 export type CollectOptions = {
-  /** 每个源最多取几条候选；0/缺省 = 沿用 limit。 */
+  /** 每个源最多取几条候选；0/缺省 = 用候选深度（depth）。 */
   perSourceLimit?: number
   /** 只要这几类内容（NewsKind）；空数组 = 不限制。 */
   kinds?: string[]
+  /**
+   * 「已经看过」的 URL —— 库里这个订阅已有的条目。
+   *
+   * 必须在这里过滤，不能留到入库时靠 UNIQUE(topic_id, hash) + INSERT OR IGNORE：
+   * 配额是按条数分配的，老条目先占到名额，新条目就永远挤不进来。
+   * 这正是「采集 12 条 / 新增 0 条 / 重复 9 条」的成因：
+   *   RSS 按发布时间倒序、GitHub 按 star 增速倒序、HN 按分数倒序，
+   *   **排在最前面那批恰好就是上一轮已经入库的那批**，于是每轮挑出来的都是同一批。
+   */
+  excludeUrls?: string[]
 }
 
 /** 并发跑选中的源；单源失败只记 error，不影响其他源。 */
@@ -768,28 +792,42 @@ export async function collectFromSources(
   options: CollectOptions = {},
 ): Promise<CollectResult> {
   const wanted = NEWS_SOURCES.filter((s) => (sourceIds.length === 0 ? s.enabled : sourceIds.includes(s.id)))
-  // 每个源先取足够多的候选（limit 的上限 20），选条交给 pickWithQuota 统一分配，
-  // 这样「某个源刚好没料」时余量能补给别的源，而不是各源先自行截断再撞车。
-  // perSourceLimit 是订阅自己配的（一个订阅想要「每源 3 条引擎官方 + 1 条 HN」这种配比）。
+  /* 候选深度要比 limit 大出一截：去掉「已经看过的」之后，feed 里剩下的新内容
+     往往在更靠后的位置（最前面几条就是上一轮采过的）。深度不够时，过滤完就剩不下东西。
+     上限 50：再深就是拿老掉牙的条目充数（时效闸门也会挡掉大部分）。 */
+  const depth = Math.min(50, Math.max(30, limit * 2))
   const askedPerSource = Math.round(Number(options.perSourceLimit ?? 0))
-  const perSource = Math.min(20, Math.max(1, askedPerSource > 0 ? askedPerSource : limit))
+  const perSource = Math.min(depth, Math.max(1, askedPerSource > 0 ? askedPerSource : depth))
   const kinds = (options.kinds ?? []).map((k) => String(k).trim()).filter(Boolean)
+  const exclude = new Set(
+    (options.excludeUrls ?? []).map((u) => String(u).trim().toLowerCase()).filter(Boolean),
+  )
   const runs = await Promise.all(
     wanted.map(async (src): Promise<SourceRun> => {
       const started = Date.now()
       try {
         let items: RawNewsItem[] = []
-        if (src.id === 'engine-official') items = await collectEngineOfficial(limit)
-        else if (src.id === 'github-discover') items = await collectGithubDiscovery(perSource, params)
-        else if (src.id === 'tech-media') items = await collectTechMedia(limit)
-        else if (src.id === 'hn-tech') items = await collectHackerNews(limit, params)
-        else if (src.id === 'github-releases') items = await collectGithubReleases(perSource, params)
+        if (src.id === 'engine-official') items = await collectEngineOfficial(depth)
+        else if (src.id === 'github-discover') items = await collectGithubDiscovery(depth, params)
+        else if (src.id === 'tech-media') items = await collectTechMedia(depth)
+        else if (src.id === 'hn-tech') items = await collectHackerNews(depth, params)
+        else if (src.id === 'github-releases') items = await collectGithubReleases(depth, params)
         else if (src.id === 'steam-news') items = await collectSteamNews(perSource, params)
         else throw new Error(`unknown_source:${src.id}`)
+        const fetched = items.length
         /* 类型过滤放在配额分配之前：先把不要的类型剔掉，配额才算得准。
            放在最后筛会让「挑中的 6 条里有 4 条被类型过滤掉」变成实际只进 2 条。 */
         if (kinds.length > 0) items = items.filter((item) => kinds.includes(item.kind))
-        return { id: src.id, label: src.label, items, ms: Date.now() - started }
+        /* 「已经看过的」也在配额分配之前剔掉，理由同上。 */
+        const unseen = exclude.size === 0 ? items : items.filter((item) => !exclude.has(item.url.toLowerCase()))
+        return {
+          id: src.id,
+          label: src.label,
+          items: unseen.slice(0, perSource),
+          fetched,
+          excluded: items.length - unseen.length,
+          ms: Date.now() - started,
+        }
       } catch (cause) {
         return { id: src.id, label: src.label, items: [], error: String((cause as Error)?.message ?? cause), ms: Date.now() - started }
       }

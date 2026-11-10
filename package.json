@@ -31,7 +31,7 @@
     "bundle:host": "tsdown -c src/host/tsdown.config.ts",
     "bundle:client": "tsdown -c src/client/tsdown.config.ts",
     "sync:smoke": "node scripts/sync-smoke.mjs",
-    "verify": "node scripts/verify-bundle.mjs && node scripts/verify-news-pipeline.mjs"
+    "verify": "node scripts/verify-bundle.mjs && node scripts/verify-news-pipeline.mjs && node scripts/verify-asset-service.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
