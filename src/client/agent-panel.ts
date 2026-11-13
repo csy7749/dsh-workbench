@@ -22,6 +22,8 @@ export interface AgentPanelDeps {
   closeModal: () => void
   /** Shadow DOM 内的 id 查询（document.getElementById 穿不透 Shadow Root）。 */
   q: <T extends HTMLElement = HTMLElement>(id: string) => T | null
+  /** 在当前弹窗内按选择器取元素（下拉框改值需要绑 change 事件）。 */
+  qAll: (selector: string) => HTMLElement[]
 }
 
 export const BINDABLE_FEATURES: Array<{ id: string; label: string }> = [
@@ -31,6 +33,8 @@ export const BINDABLE_FEATURES: Array<{ id: string; label: string }> = [
   { id: 'product.design', label: '产品 · 设计发散' },
   { id: 'bug.fix', label: 'Bug · 修复建议' },
   { id: 'test.design', label: '测试 · 用例设计' },
+  { id: 'ui.design', label: 'UI 设计 · 页面清单与规范' },
+  { id: 'demo.build', label: 'DEMO · 页面 HTML 生成' },
 ]
 
 const ROLE_LABEL: Record<string, string> = {
@@ -68,6 +72,7 @@ export function createAgentPanel(deps: AgentPanelDeps) {
   function sectionHtml(): string {
     const header = `<div class="portal-sec-head"><h2>智能体团队</h2>
       <div class="portal-sec-actions"><span>${teams.length > 0 ? `${teams.length} 支团队` : '默认产品研发团队'}</span>
+        <button class="btn tiny" data-act="agent-tools-open">工具</button>
         <button class="btn tiny" data-act="agent-memory-open">记忆</button>
         <button class="btn tiny" data-act="agent-knowledge-open">知识</button></div></div>`
     if (teams.length === 0) {
@@ -205,6 +210,103 @@ export function createAgentPanel(deps: AgentPanelDeps) {
     await load()
     await openTeam(teamId)
     renderPortalRefresh?.()
+  }
+
+  /* ------------------------------ 工具策略 ------------------------------ */
+
+  /** 工具策略视图：由宿主按「当前已注册工具 × 覆盖 × 档位」算好，前端只负责渲染。 */
+  async function fetchToolPolicy(): Promise<any | null> {
+    try {
+      const res = await fetch(`${deps.api}/tools/policy`, { cache: 'no-store' })
+      if (!res.ok) return null
+      return await res.json()
+    } catch { return null }
+  }
+
+  function toolChips(group: any): string {
+    return group.tools.map((tool: any) => {
+      const on = tool.enabled === true
+      const tip = on ? `${tool.capability}` : `已禁用：${tool.reason}`
+      return `<button type="button" class="agent-multi-item${on ? ' on' : ''}" title="${deps.esc(tip)}"
+        data-act="agent-tool-toggle" data-tool="${deps.esc(tool.name)}" data-enabled="${on ? '0' : '1'}">${deps.esc(tool.label)}</button>`
+    }).join('')
+  }
+
+  async function openToolsModal(): Promise<void> {
+    const view = await fetchToolPolicy()
+    if (view === null) { deps.toast('工具策略接口不可用（宿主未加载）'); return }
+    const profiles: any[] = Array.isArray(view.profiles) ? view.profiles : []
+    const capabilities: any[] = Array.isArray(view.capabilities) ? view.capabilities : []
+    const groups: any[] = Array.isArray(view.groups) ? view.groups : []
+    const blocked: any[] = Array.isArray(view.recentBlocked) ? view.recentBlocked : []
+    const policy = view.policy ?? {}
+    const featureProfiles: Record<string, string> = policy.featureProfiles ?? {}
+    const defaultProfile = String(view.profile ?? 'full')
+    const profileOptions = (current: string): string => profiles
+      .map(item => `<option value="${deps.esc(item.id)}"${item.id === current ? ' selected' : ''}>${deps.esc(item.label)} · ${deps.esc(item.description)}</option>`)
+      .join('')
+    const capChips = capabilities.map(cap => `<button type="button" class="agent-multi-item${cap.enabled ? ' on' : ''}"
+      data-act="agent-cap-toggle" data-cap="${deps.esc(cap.id)}" data-enabled="${cap.enabled ? '0' : '1'}">${deps.esc(cap.label)}</button>`).join('')
+    const groupRows = groups.map(group => `<div class="agent-bind-row">
+      <div class="agent-bind-label">${deps.esc(group.group)}<small>${group.tools.length} 个</small></div>
+      <div class="agent-multi">${toolChips(group)}</div></div>`).join('') || '<div class="agent-empty">宿主还没有注册任何工具</div>'
+    const featureRows = BINDABLE_FEATURES.map(feature => `<div class="agent-bind-row">
+      <div class="agent-bind-label">${deps.esc(feature.label)}</div>
+      <select data-act="agent-feature-profile" data-feature="${deps.esc(feature.id)}" style="height:26px;border:1px solid var(--line);border-radius:7px;background:var(--panel-2);color:var(--text-2);font:inherit;font-size:11px;padding:0 6px">
+        <option value=""${featureProfiles[feature.id] === undefined ? ' selected' : ''}>跟随默认档</option>
+        ${profileOptions(featureProfiles[feature.id] ?? '')}
+      </select></div>`).join('')
+    const blockedRows = blocked.slice(0, 8).map(call => `<div class="agent-row"><div class="agent-row-main">
+      <b>${deps.esc(call.tool)}</b><small>${deps.esc(call.at)} · ${deps.esc(call.code)} · 档位 ${deps.esc(call.profile)}</small>
+      <div class="agent-intro">${deps.esc(call.reason)}</div></div></div>`).join('')
+    deps.openModal(`<div class="agent-modal"><h3>工具</h3>
+      <div class="agent-team-meta">关闭的工具不会出现在模型的可选工具里；即使被调用，宿主也会拒绝。改完下一次模型步骤生效。</div>
+      <div class="agent-bind"><div class="agent-bind-head">默认工具档 <small>团队派发时没按功能单独指定就用这个；你自己在 DSH 里的会话不受影响</small></div>
+        <div class="agent-bind-row"><div class="agent-bind-label">当前档位</div>
+          <select data-act="agent-profile-set" style="height:26px;border:1px solid var(--line);border-radius:7px;background:var(--panel-2);color:var(--text-2);font:inherit;font-size:11px;padding:0 6px">${profileOptions(defaultProfile)}</select>
+        </div></div>
+      <div class="agent-bind"><div class="agent-bind-head">能力开关 <small>关掉一组＝这一能力下的所有工具（含 DSH 内建，如执行命令/改文件）本次都不可用</small></div>
+        <div class="agent-multi">${capChips}</div></div>
+      <div class="agent-bind"><div class="agent-bind-head">工具 <small>点一下切换；灰掉的是当前档位下不可用的</small></div>${groupRows}</div>
+      <div class="agent-bind"><div class="agent-bind-head">按功能指定档位 <small>派发时按 feature 自动取用</small></div>${featureRows}</div>
+      ${blockedRows !== '' ? `<div class="agent-bind"><div class="agent-bind-head">最近被拦下的调用</div><div class="agent-list">${blockedRows}</div></div>` : ''}
+      <div class="agent-foot"><span class="note">策略存于 ~/.dsh/dsh-workbench/tool-policy.json，只记录改动过的项</span>
+        <div class="right"><button class="btn tiny" data-act="agent-tools-reset">恢复默认</button><button class="btn" data-act="agent-close">关闭</button></div></div></div>`)
+    deps.qAll('[data-act="agent-profile-set"]').forEach(node => node.addEventListener('change', event => {
+      void setDefaultProfile((event.currentTarget as HTMLSelectElement).value)
+    }))
+    deps.qAll('[data-act="agent-feature-profile"]').forEach(node => node.addEventListener('change', event => {
+      const select = event.currentTarget as HTMLSelectElement
+      void setFeatureProfile(select.getAttribute('data-feature') ?? '', select.value)
+    }))
+  }
+
+  async function patchPolicy(body: unknown): Promise<void> {
+    const res = await fetch(`${deps.api}/tools/policy`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    if (!res.ok) { deps.toast('保存失败'); return }
+    await openToolsModal()
+  }
+
+  function toggleTool(name: string, enabled: boolean): Promise<void> {
+    return patchPolicy({ tool: name, enabled })
+  }
+
+  function toggleCapability(capability: string, enabled: boolean): Promise<void> {
+    return patchPolicy({ capability, enabled })
+  }
+
+  function setDefaultProfile(profile: string): Promise<void> {
+    return patchPolicy({ defaultProfile: profile })
+  }
+
+  function setFeatureProfile(feature: string, profile: string): Promise<void> {
+    return patchPolicy({ feature, profile })
+  }
+
+  function resetPolicy(): Promise<void> {
+    return patchPolicy({ reset: true })
   }
 
   function openTeamForm(team?: { id: string; name: string; desc: string; defaultWorkspace: string }): void {
@@ -386,7 +488,7 @@ export function createAgentPanel(deps: AgentPanelDeps) {
   let renderPortalRefresh: (() => void) | null = null
   function onRefresh(callback: () => void): void { renderPortalRefresh = callback }
 
-  return { teams: () => teams, members: () => members, load, sectionHtml, openTeam, openTeamForm, openMemberForm, saveMember, removeMember, toggleWrite, addMemberToTeam, createTeam, deleteTeam, openMemoryModal, addMemory, deleteMemory, openKnowledgeModal, indexKnowledge, searchKnowledge, toggleOption, toggleBinding, loadCatalog, onRefresh }
+  return { teams: () => teams, members: () => members, load, sectionHtml, openTeam, openTeamForm, openMemberForm, saveMember, removeMember, toggleWrite, addMemberToTeam, createTeam, deleteTeam, openMemoryModal, addMemory, deleteMemory, openKnowledgeModal, indexKnowledge, searchKnowledge, toggleOption, toggleBinding, loadCatalog, onRefresh, openToolsModal, toggleTool, toggleCapability, setDefaultProfile, setFeatureProfile, resetPolicy }
 }
 
 export type AgentPanel = ReturnType<typeof createAgentPanel>

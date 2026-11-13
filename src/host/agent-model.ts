@@ -218,6 +218,8 @@ export interface KickoffInput {
   /** 团队按功能绑定的候选执行人（不含主理人）；为空则全体成员。 */
   executors?: string[]
   featureLabel?: string
+  /** 本次派发的工具范围说明（由工具策略生成）；给了就写进提示词，且宿主会真的拦截。 */
+  toolPolicy?: string
 }
 
 /** 派发契约：固定工具名、任务板顺序、并发/超时、写回方式与失败要求。 */
@@ -276,6 +278,9 @@ export function buildTeamKickoff(input: KickoffInput): string {
     isIdea ? `5. 全部完成后调用 workbench_idea_progress，参数 status="done"。` : '',
     `${isIdea ? '6' : '5'}. 最后用中文给出一段总结（做了什么、产物在哪、有什么缺口）。`,
     '',
+    ...(input.toolPolicy !== undefined && input.toolPolicy !== ''
+      ? ['## 本次工具范围（宿主强制，不是建议）', input.toolPolicy, '']
+      : []),
     `## 约束`,
     `- 成员失败或超时：重派一次；仍失败就在总结里写明，不要静默跳过。`,
     `- fileWrite=read 的成员禁止改工作区文件；所有成员都禁止改与本任务无关的文件。`,

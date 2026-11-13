@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS agent_dispatches (
   member_count INTEGER NOT NULL DEFAULT 0,
   tokens INTEGER NOT NULL DEFAULT 0,
   kickoff TEXT NOT NULL DEFAULT '',
+  tool_profile TEXT NOT NULL DEFAULT '',
   started_at TEXT NOT NULL,
   finished_at TEXT NOT NULL DEFAULT '',
   error TEXT NOT NULL DEFAULT ''
@@ -155,6 +156,12 @@ export class AgentStore {
         this.db.exec("ALTER TABLE agent_teams ADD COLUMN bindings_json TEXT NOT NULL DEFAULT '{}'")
       }
     } catch (cause) { console.warn('[dsh-workbench] agent_teams 补列失败：', String(cause)) }
+    try {
+      const dispatchCols = (this.db.prepare('PRAGMA table_info(agent_dispatches)').all() as AnyMap[]).map(col => String(col.name))
+      if (!dispatchCols.includes('tool_profile')) {
+        this.db.exec("ALTER TABLE agent_dispatches ADD COLUMN tool_profile TEXT NOT NULL DEFAULT ''")
+      }
+    } catch (cause) { console.warn('[dsh-workbench] agent_dispatches 补列失败：', String(cause)) }
   }
 
   /** FTS5 不可用时降级为 LIKE（本机验证可用，仍做保护）。 */
@@ -329,11 +336,12 @@ export class AgentStore {
   createDispatch(input: AnyMap): AnyMap {
     const id = `ad-${randomUUID().slice(0, 8)}`
     const ts = now()
-    this.db.prepare(`INSERT INTO agent_dispatches(id,idea_id,run_id,team_id,session_id,status,goal,workspace_path,timeout_ms,member_count,kickoff,started_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+    this.db.prepare(`INSERT INTO agent_dispatches(id,idea_id,run_id,team_id,session_id,status,goal,workspace_path,timeout_ms,member_count,kickoff,tool_profile,started_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, String(input.ideaId ?? ''), String(input.runId ?? ''), String(input.teamId ?? ''), '', 'dispatching',
         String(input.goal ?? '').slice(0, AGENT_LIMITS.dispatchGoal), String(input.workspacePath ?? ''),
-        Number(input.timeoutMs) || AGENT_LIMITS.dispatchTimeoutMs, Number(input.memberCount) || 0, String(input.kickoff ?? ''), ts)
+        Number(input.timeoutMs) || AGENT_LIMITS.dispatchTimeoutMs, Number(input.memberCount) || 0, String(input.kickoff ?? ''),
+        String(input.toolProfile ?? ''), ts)
     const members: AnyMap[] = Array.isArray(input.members) ? input.members : []
     for (const member of members) {
       this.db.prepare('INSERT OR IGNORE INTO agent_dispatch_members(dispatch_id,member_id,member_name,session_member_name,file_write,status,joined_at) VALUES(?,?,?,?,?,?,?)')
@@ -358,8 +366,20 @@ export class AgentStore {
       sessionId: String(row.session_id ?? ''), status: String(row.status), goal: String(row.goal ?? ''),
       workspacePath: String(row.workspace_path ?? ''), timeoutMs: Number(row.timeout_ms ?? 0),
       memberCount: Number(row.member_count ?? 0), startedAt: String(row.started_at ?? ''),
+      toolProfile: String(row.tool_profile ?? ''),
       finishedAt: String(row.finished_at ?? ''), error: String(row.error ?? ''), members,
     }
+  }
+
+  /** 工具策略用：会话 → 派发的工具档位。前端建会话后才回写 session_id，故按需查。 */
+  dispatchBySession(sessionId: string): { id: string; toolProfile: string; feature: string } | null {
+    const key = String(sessionId ?? '').trim()
+    if (key === '') return null
+    try {
+      const row = this.db.prepare('SELECT id, tool_profile, goal FROM agent_dispatches WHERE session_id = ? ORDER BY started_at DESC LIMIT 1').get(key) as AnyMap | undefined
+      if (row === undefined) return null
+      return { id: String(row.id), toolProfile: String(row.tool_profile ?? ''), feature: '' }
+    } catch { return null }
   }
 
   updateDispatch(id: string, patch: AnyMap): AnyMap | null {

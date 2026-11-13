@@ -19,6 +19,7 @@ import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
 import { createIdeaModule, buildIdeaPrompt } from './idea.js'
 import { createAgentModule } from './agent.js'
+import { createToolPolicyModule, registerGuardedTool } from './tool-policy.js'
 import { collectFromSources, NEWS_SOURCES } from './news-sources.js'
 import { translateNewsItems } from './translate.js'
 /* 资产库本机服务（4173）的按需拉起：进入「Unity 资产库」时由宿主代启，不再要求用户敲命令。 */
@@ -6070,8 +6071,7 @@ function registerNewsTool(ctx: any, store: SqliteStore | JsonStore): void {
       }
     },
   }
-  if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(tool), 'workbench: news publish tool')
-  else ctx.tools.register(tool)
+  registerGuardedTool(ctx, tool, 'workbench: news publish tool')
   console.log('[dsh-workbench] 已注册工具 workbench_news_publish')
 }
 
@@ -6113,8 +6113,7 @@ function registerBugTool(ctx: any, store: SqliteStore | JsonStore): void {
       }
     },
   }
-  if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(tool), 'workbench: bug update tool')
-  else ctx.tools.register(tool)
+  registerGuardedTool(ctx, tool, 'workbench: bug update tool')
   console.log('[dsh-workbench] 已注册工具 workbench_bug_update')
 }
 
@@ -6142,8 +6141,7 @@ function registerModuleTool(ctx: any, store: SqliteStore | JsonStore): void {
       catch (cause) { return { ok: false, error: String((cause as Error)?.message ?? cause) } }
     },
   }
-  if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(tool), 'workbench: module tool')
-  else ctx.tools.register(tool)
+  registerGuardedTool(ctx, tool, 'workbench: module tool')
   console.log('[dsh-workbench] 已注册工具 workbench_module_publish')
 
   /* 模块/笔记生成进度上报：让产品页的进度条真正动起来（与 demo 进度同构） */
@@ -6168,8 +6166,7 @@ function registerModuleTool(ctx: any, store: SqliteStore | JsonStore): void {
       catch (cause) { return { ok: false, error: String((cause as Error)?.message ?? cause) } }
     },
   }
-  if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(progressTool), 'workbench: product progress tool')
-  else ctx.tools.register(progressTool)
+  registerGuardedTool(ctx, progressTool, 'workbench: product progress tool')
   console.log('[dsh-workbench] 已注册工具 product_progress_publish')
 
   /* 导图节点写入：把 AI 从素材提炼出的结构落成导图节点（走草稿保存，版本与镜像一致） */
@@ -6197,8 +6194,7 @@ function registerModuleTool(ctx: any, store: SqliteStore | JsonStore): void {
       } catch (cause) { return { ok: false, error: String((cause as Error)?.message ?? cause) } }
     },
   }
-  if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(nodeTool), 'workbench: map node tool')
-  else ctx.tools.register(nodeTool)
+  registerGuardedTool(ctx, nodeTool, 'workbench: map node tool')
   console.log('[dsh-workbench] 已注册工具 workbench_map_node_publish')
 
   /* ---------- UI 设计 / DEMO / 主题 三个 Agent 工具（A8） ---------- */
@@ -6286,8 +6282,7 @@ function registerModuleTool(ctx: any, store: SqliteStore | JsonStore): void {
     },
   }
   for (const tool of [uiDocTool, demoPublishTool, themeTool]) {
-    if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(tool), `workbench: ${tool.name}`)
-    else ctx.tools.register(tool)
+    registerGuardedTool(ctx, tool, `workbench: ${tool.name}`)
     console.log(`[dsh-workbench] 已注册工具 ${tool.name}`)
   }
 
@@ -6322,8 +6317,7 @@ function registerTestCaseTool(ctx: any, store: SqliteStore | JsonStore): void {
       catch (cause) { return { ok: false, error: String((cause as Error)?.message ?? cause) } }
     },
   }
-  if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(tool), 'workbench: test case tool')
-  else ctx.tools.register(tool)
+  registerGuardedTool(ctx, tool, 'workbench: test case tool')
   console.log('[dsh-workbench] 已注册工具 workbench_testcase_publish')
 
   /* 1.14 T6/T7：测试设计文档（按角色分组）→ 写笔记 + 关联计划 */
@@ -6350,16 +6344,14 @@ function registerTestCaseTool(ctx: any, store: SqliteStore | JsonStore): void {
       } catch (cause) { return { ok: false, error: String((cause as Error)?.message ?? cause) } }
     },
   }
-  if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(docTool), 'workbench: test doc tool')
-  else ctx.tools.register(docTool)
+  registerGuardedTool(ctx, docTool, 'workbench: test doc tool')
   console.log('[dsh-workbench] 已注册工具 workbench_test_doc_publish')
 }
 
 function registerTestFlowTools(ctx: any, store: SqliteStore | JsonStore): void {
   if (ctx?.tools === undefined || typeof ctx.tools.register !== 'function') return
   const register = (tool: any, label: string): void => {
-    if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(tool), `workbench: ${label}`)
-    else ctx.tools.register(tool)
+    registerGuardedTool(ctx, tool, `workbench: ${label}`)
     console.log(`[dsh-workbench] 已注册工具 ${tool.name}`)
   }
   const resultTool = {
@@ -6532,8 +6524,7 @@ function registerNoteTool(ctx: any, store: SqliteStore | JsonStore): void {
       } catch (cause) { return { ok: false, error: String((cause as Error)?.message ?? cause) } }
     },
   }
-  if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(tool), 'workbench: note update tool')
-  else ctx.tools.register(tool)
+  registerGuardedTool(ctx, tool, 'workbench: note update tool')
   console.log('[dsh-workbench] 已注册工具 workbench_note_update')
 }
 
@@ -6568,8 +6559,7 @@ function registerProductTools(ctx: any, store: SqliteStore | JsonStore): void {
     },
   }
   const register = (tool: any, label: string): void => {
-    if (typeof ctx.effect === 'function') ctx.effect(() => ctx.tools.register(tool), `workbench: ${label}`)
-    else ctx.tools.register(tool)
+    registerGuardedTool(ctx, tool, `workbench: ${label}`)
     console.log(`[dsh-workbench] 已注册工具 ${tool.name}`)
   }
   register(noteTool, 'product note tool')
@@ -6706,10 +6696,34 @@ export function apply(ctx: any): void {
   }
 
   /* 智能体团队：与灵感同库不同表；无 SQLite 时禁用。 */
+  /* 工具策略：先建（派发要按 feature 取档位），闸门后装（需要宿主 ctx 与 agent 会话）。 */
   let agentModule: ReturnType<typeof createAgentModule> | null = null
+  const toolPolicy = createToolPolicyModule({
+    dataDir: dataDir(),
+    listTools: () => {
+      try {
+        const schemas = ctx?.tools?.schemas?.()
+        return Array.isArray(schemas) ? schemas.map((schema: any) => String(schema?.name ?? '')).filter(Boolean) : []
+      } catch { return [] }
+    },
+    dispatchBySession: (sessionId: string) => agentModule?.store?.dispatchBySession?.(sessionId) ?? null,
+    log: (message: string) => console.warn(message),
+  })
+  try {
+    toolPolicy.installGate(ctx)
+  } catch (cause) {
+    console.warn('[dsh-workbench] 工具闸门安装失败（工具开关只影响提示词，不再强制拦截）：', String(cause))
+  }
+
   try {
     if (typeof (store as any).connection === 'function') {
-      agentModule = createAgentModule({ db: (store as any).connection(), dataDir: dataDir(), prefix: PREFIX, ctx })
+      agentModule = createAgentModule({
+        db: (store as any).connection(), dataDir: dataDir(), prefix: PREFIX, ctx,
+        toolPolicy: {
+          profileForFeature: (feature: string) => toolPolicy.profileForFeature(feature),
+          describeForPrompt: (profile: string) => toolPolicy.describeForPrompt(profile),
+        },
+      })
     }
   } catch (cause) {
     console.warn('[dsh-workbench] 智能体团队初始化失败（主工作台不受影响）：', String(cause))
@@ -6743,6 +6757,7 @@ export function apply(ctx: any): void {
       try {
         if (ideaModule !== null && (await ideaModule.handle(req, res, path, method, url))) return
         if (agentModule !== null && (await agentModule.handle(req, res, path, method, url))) return
+        if (await toolPolicy.handle(req, res, path, method, url)) return
         if (method === 'GET' && (path === '/state' || path === '/')) {
           send(res, 200, store.readState())
           return

@@ -9,6 +9,7 @@ import { basename, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { IdeaStore } from './idea-store.js'
+import { registerGuardedTool } from './tool-policy.js'
 import {
   IDEA_ANGLES, IDEA_LIMITS, clampText, diffGraphs, graphBytes, sanitizeCustomAngles,
   inputDigest, mergeGraph, normalizeGraph, pushRunLog, type CustomAngle, type IdeaGraph,
@@ -484,10 +485,7 @@ export function createIdeaModule(options: IdeaModuleOptions): IdeaModule | null 
       console.warn('[dsh-workbench] tools 服务不可用：灵感工具未注册')
       return
     }
-    const register = (tool: any, label: string): void => {
-      if (typeof ctx.effect === 'function') ctx.effect(() => tools.register(tool), `workbench: ${label}`)
-      else tools.register(tool)
-    }
+    const register = (tool: any, label: string): void => registerGuardedTool(ctx, tool, `workbench: ${label}`)
 
     register({
       name: 'workbench_idea_expand',

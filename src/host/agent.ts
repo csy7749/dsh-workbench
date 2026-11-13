@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
 import { AgentStore } from './agent-store.js'
 import { KnowledgeIndex, KNOWLEDGE_LIMITS } from './knowledge.js'
+import { registerGuardedTool } from './tool-policy.js'
 import {
   AGENT_LIMITS, FILE_WRITES, MEMORY_SCOPES, MEMBER_ROLES, assembleKnowledge, assembleMemory,
   buildTeamKickoff, clampText, type AgentMember,
@@ -27,6 +28,11 @@ export interface AgentModuleOptions {
   prefix: string
   /** 宿主 Context：用于读取 DSH 的模型/技能/MCP/工具目录，供成员配置选择。 */
   ctx?: any
+  /** 工具策略：派发时按 feature 取档位，并把可用工具写进 kickoff（宿主另有闸门强制）。 */
+  toolPolicy?: {
+    profileForFeature(feature: string): string
+    describeForPrompt(profile: string): string
+  }
 }
 
 export interface AgentModule {
@@ -286,6 +292,12 @@ export function createAgentModule(options: AgentModuleOptions): AgentModule {
               }
             }
             const members = [lead, ...candidates.filter(member => member.id !== lead.id)]
+            /* 工具范围：显式指定 > 按功能绑定的档位 > 全局默认档。宿主闸门按派发记录里的这个值强制。 */
+            const requestedProfile = typeof body?.toolProfile === 'string' ? body.toolProfile.trim() : ''
+            const toolProfile = requestedProfile !== ''
+              ? requestedProfile
+              : (options.toolPolicy?.profileForFeature(feature) ?? 'full')
+            const toolPolicyText = options.toolPolicy?.describeForPrompt(toolProfile) ?? ''
             const timeoutMinutes = Math.min(120, Math.max(1, Math.round((Number(body?.timeoutMs) || AGENT_LIMITS.dispatchTimeoutMs) / 60000)))
             const workspacePath = String(body?.workspacePath ?? team.defaultWorkspace ?? '')
             const injectedMemory = typeof body?.memory === 'string' ? body.memory : injectMemory(teamId, workspacePath)
@@ -305,11 +317,12 @@ export function createAgentModule(options: AgentModuleOptions): AgentModule {
               knowledge: injectedKnowledge !== '' ? injectedKnowledge : undefined,
               executors: candidates.map(member => member.name),
               featureLabel: feature,
+              toolPolicy: toolPolicyText !== '' ? toolPolicyText : undefined,
             })
             const dispatch = store.createDispatch({
               ideaId, runId: body?.runId, teamId, goal: body?.goal,
               workspacePath: body?.workspacePath ?? team.defaultWorkspace,
-              timeoutMs: timeoutMinutes * 60000, memberCount: members.length, kickoff,
+              timeoutMs: timeoutMinutes * 60000, memberCount: members.length, kickoff, toolProfile,
               members: members.map(member => ({ id: member.id, name: member.name, handle: member.handle, fileWrite: member.fileWrite })),
             })
             send(res, 200, {
@@ -573,10 +586,7 @@ export function createAgentModule(options: AgentModuleOptions): AgentModule {
       console.warn('[dsh-workbench] tools 服务不可用：团队工具未注册')
       return
     }
-    const register = (tool: any, label: string): void => {
-      if (typeof ctx.effect === 'function') ctx.effect(() => tools.register(tool), `workbench: ${label}`)
-      else tools.register(tool)
-    }
+    const register = (tool: any, label: string): void => registerGuardedTool(ctx, tool, `workbench: ${label}`)
     register({
       name: 'workbench_memory_search',
       description: '在个人/项目/团队记忆里搜索（团队与灵感发散时用）。',

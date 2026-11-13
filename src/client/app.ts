@@ -371,6 +371,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     openModal: (html: string) => openModal(html),
     closeModal: () => closeModal(),
     q: $id,
+    qAll: (selector: string) => Array.from($id('wb-modal')?.querySelectorAll(selector) ?? []) as HTMLElement[],
   })
   agentPanel.onRefresh(() => renderAll())
   const content = (): HTMLElement => $id('wb-content') as HTMLElement
@@ -8513,6 +8514,16 @@ ${lines}`
       }
       if (act === 'agent-refresh-catalog') { void agentPanel.loadCatalog().then(() => agentPanel.openMemberForm(actEl.getAttribute('data-team') ?? '')); return }
       if (act === 'agent-memory-open') { void agentPanel.openMemoryModal(); return }
+      if (act === 'agent-tools-open') { void agentPanel.openToolsModal(); return }
+      if (act === 'agent-tools-reset') { void agentPanel.resetPolicy(); return }
+      if (act === 'agent-tool-toggle') {
+        void agentPanel.toggleTool(actEl.getAttribute('data-tool') ?? '', actEl.getAttribute('data-enabled') === '1')
+        return
+      }
+      if (act === 'agent-cap-toggle') {
+        void agentPanel.toggleCapability(actEl.getAttribute('data-cap') ?? '', actEl.getAttribute('data-enabled') === '1')
+        return
+      }
       if (act === 'agent-memory-add') { void agentPanel.addMemory(); return }
       if (act === 'agent-memory-del') { void agentPanel.deleteMemory(id); return }
       if (act === 'agent-knowledge-open') { agentPanel.openKnowledgeModal(); return }
