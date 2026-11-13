@@ -14,13 +14,15 @@
 
 “文件为内容真源”不意味着同时允许 SQLite、原路径和 blob 三方各自修改同一快照。历史内容只从内容库读，工作文件变化通过显式重新导入进入候选。
 
+工作流首期要求可用的 SQLite 事务存储。当前主工作台在没有 `node:sqlite` 时可使用 JsonStore，但新工作流不能据此承诺相同的 CAS / 恢复能力：缺 SQLite 时仅禁用新运行、采用和发布，明确返回 `workflow_requires_sqlite`，保留旧工作台功能，不为首期另造 JSON 工作流引擎。初始化失败须与主面板隔离；已有工作流数据不能在能力恢复前被空 JSON 状态覆盖。
+
 ## 2. 建议表与索引
 
 | 表 | 核心字段 / 约束 |
 | --- | --- |
 | workflow_definitions | id、name、productKind、draftRevision、publishedVersion、archivedAt |
 | workflow_versions | workflowId、version、definitionJson、packageLock、hash；唯一版本 |
-| workflow_runs | productContext、definitionVersion、status、revision、forkSource、budget |
+| workflow_runs | productContext、definitionVersion、status、revision、forkSource、累计 budget、pauseReason、暂停 / 取消意图 |
 | workflow_steps | runId、nodeId、state、freshness、currentAdoptionId |
 | workflow_attempts | stepId、attemptNo、tokenHash、leaseUntil、sessionId、status、inputManifest |
 | workflow_artifacts / snapshots | 逻辑身份、类型、manifest、hash、父版本、作者、尝试来源 |
@@ -31,6 +33,7 @@
 | workflow_effects | attemptId、operationKey、target、status、externalReceipt |
 | workflow_external_jobs | attemptId、adapter / 实例身份、jobRef、阶段指纹、提交意图、外部 ID、状态与已捕获结果；具体 DDL 在 W0 冻结 |
 | workflow_publish_jobs | adoptionId、domainTarget、baseRevision、outboxStatus |
+| workflow_requests | scopeId、operation、idempotencyKey、requestHash、operationId、结果引用、保留期；唯一约束按 01 |
 
 所有外键 / 唯一索引和归档策略在 W0 完成 DDL 设计；本表是边界方案，不是可直接执行的 migration。Event payload 有版本和大小限制，不当无限聊天日志。
 
@@ -54,6 +57,10 @@
 
 工作区清单只用于定位和导出，不作为可共享完整备份；绝对路径不能成为跨机器唯一身份。已有外部工程不自动移动。只读工作区需要可配置临时工作根并保留范围约束。
 
+工作区与 dataDir 可在不同卷：先把允许的输出复制到内容库所在卷的 staging 并校验，再在该卷发布对象，不能直接对跨卷工作文件承诺原子 rename。正式对象和 manifest 都须在 DB 引用前完整落盘，写入 / 校验失败不提交 Snapshot；孤立文件仅进入后续有引用检查的回收计划。进程崩溃恢复与断电持久性分开验证，W0 明确 SQLite journal / synchronous、文件落盘和 OS 支持边界。
+
+Draft 也不能先覆盖唯一正文再更新 DB revision。先写按 draftRevision 区分的新内容并落盘，再以事务 CAS 更新指针；失败保留旧可读版本，恢复扫描清理未引用候选。对象、manifest、Draft 及请求去重记录都纳入成组备份与引用完整性核验。
+
 ## 4. 文件与 SQLite 的一致性协议
 
 跨文件与数据库不声称单事务原子性，使用阶段发布与对账：
@@ -64,6 +71,12 @@
 4. 采用时事务写 Adoption、Step、stale 标记及声明的发布 outbox。人工确认还需 CAS 更新 HumanTask、Draft revision 和继续 / 暂停意图；普通节点系统采用无需创建人审待办。
 5. outbox 按目标基准 revision 幂等更新 notes / modules / 工程工作文件；外部冲突时停在 publish-conflict，不覆盖人工变化。
 6. 若下一步依赖领域投影，则等待发布成功；若读取快照，可在契约允许时继续，不依赖镜像更新时间猜测完成。
+
+发布任务按 `pending / running / succeeded / conflict / failed / outcome_unknown / superseded / cancelled` 分别记录；`publish-conflict` 是界面原因码，不是 WorkflowRun 新状态。必需目标冲突 / 失败时运行 paused，成功条件遵循 01。正式发布前复核采用是否仍为当前、运行取消意图及目标基准；被替换的旧采用将未执行任务记 superseded，不得继续回写。取消阻止尚未领取的发布；已发起的文件 / 外部操作先对账，不能假设撤销成功。
+
+领域 DB 更新可以事务化，但多个用户文件不具备跨文件原子替换保证。发布记录同时保存原基准和预期结果 hash；崩溃后目标仍为基准才可继续，已是预期结果则补记成功，出现第三种内容即冲突。多个发布目标须显示逐项结果和集合状态：全部必需项完成前不显示“正式发布完成”，不覆盖用户后来修改，也不承诺外部读者看不到短暂中间状态。notes 的 DB 与 Markdown 镜像分别对账；现有 `saveNote` 吞掉镜像失败的行为不能直接作为新 outbox 的成功依据。
+
+旧 UI、工具和 `/sync/push` 都可能写 notes，不能只检查旧流水线按钮。发布冲突以目标真实字段 / 文件 hash 或新建的领域 revision 比较；现有全局 revision 和秒级 updated_at 不足以单独识别所有同秒修改。只抽取试点涉及的保存服务，保留稳定领域 ID，避免复用 `saveNote` 时的隐式 doc_key 推导、正文截断和版本保留策略改变工作流快照。
 
 宿主启动扫描 staging、未引用对象、未结 Attempt 和 outbox。缺内容的记录标 unavailable 并阻止执行，不能以空内容继续。崩溃恢复只完成已有可验证事务，不自动重复付费 / 发布调用。
 
@@ -83,6 +96,8 @@
 
 使用 SQLite backup API 或停写后的可靠复制，不在线只复制 WAL 主文件。备份清单包含 DB schema、blob/hash、包版本和用户工作文件捕获范围；恢复到副本后先做完整性验证。
 
+成组备份须建立一致性边界：短暂停写 / 领取以取得 DB 与所引用 manifest、blob、Draft revision 的清单，或使用可证明等价的快照流程；复制期间固定这些引用并禁止 GC / 草稿版本清理。备份结束后验证清单中每项内容及 hash，恢复前不启用调度 / 发布。分别在不同时刻复制 DB 和可变草稿不算已验证的成组备份。
+
 模板包与运行包分开：模板包不含用户产物；运行包可含内容和来源，但不包含密钥、环境配置或默认执行脚本。导入拒绝路径穿越、链接逃逸、超限压缩文件和不支持 schema；未知包仅只读。
 
 删除默认归档。对象 GC 先扫描引用、保留期和导出依赖，再生成计划供执行；仍被草稿、运行、采用和发布引用的对象不可回收。用户主动请求彻底删除时另行处理依赖和告警，不静默级联。
@@ -98,6 +113,6 @@
 
 ## 8. 风险与回退
 
-回退 UI 和执行入口可以是代码回退；回退已经发布到用户工程的效果不能仅还原 DB。需要保存发布前基准，用户文件未再变化时才可执行反向恢复，否则导出恢复副本人工处理。新表默认保留只读，不回退时删除内容库；备份未验证前不执行 destructive migration。
+回退 UI 和执行入口可以是代码回退；回退已经发布到用户工程的效果不能仅还原 DB。需要保存发布前基准，用户文件未再变化时才可执行反向恢复，否则导出恢复副本人工处理。新表默认保留只读，回退时不删除内容库；备份未验证前不执行 destructive migration。
 
 未决：移动 / 离线工作区的重绑定方式、共享数据目录的权限和最大文件策略，W0 必须确定首期支持范围。

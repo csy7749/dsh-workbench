@@ -1,5 +1,7 @@
 # 游戏技术雷达 产品审计报告（第 2 版）
 
+> 时效说明（2026-11-11）：本文保留 2026-11-01 的现场结论。当前源码已包含确定性采集入口、七类 kind、source_health、热度 / event_key 及 `scripts/verify-news-pipeline.mjs`，不能直接将下表全部作为未完成任务。应先逐项复核实现与运行效果；URL 归并也不等于语义事件合并。本次整理未复跑业务测试，整体排期见 [执行计划](execution-plan-2026-11-11.md)。
+
 审计日期 2026-11-01，分支 `feat/news-extension`。
 方法：读代码（`src/host/index.ts`、`src/host/news-sources.ts`、`src/client/app.ts`）、查运行库 `dsh-workbench.sqlite` 的真实数据、对照群公告里的产品口径。
 

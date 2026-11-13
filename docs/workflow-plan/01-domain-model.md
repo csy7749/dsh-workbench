@@ -35,14 +35,22 @@ Artifact 的“当前版本”只是视图指针。已完成运行固定引用�
 | running | 到达显式人工节点，已创建待办和输入基准 | waiting_review |
 | running / waiting_review | 暂停请求生效 | paused |
 | waiting_review | 用户确认且校验通过，仍有下一步 | running |
-| paused | 用户继续，依赖有效 | running 或 waiting_review |
-| 任一非终态 | 宿主重启后发现未结执行 | recovering |
+| paused | 用户继续且阻塞已解除，仍有步骤 | running 或 waiting_review |
+| paused | 用户继续，所有必要步骤和必需发布均已完成 | succeeded |
+| 任一非终态 | 宿主重启后发现需要外部对账的未结执行 | recovering |
 | recovering | 对账可确认结果 | running / waiting_review / paused / failed |
-| running / waiting_review | 所有必要步骤均有有效采用记录 | succeeded |
-| running / recovering | 必要步骤失败且本轮停止 | failed |
+| running / waiting_review | 所有必要步骤均有有效采用记录，必需发布完成且无未结执行 | succeeded |
+| running / waiting_review / recovering | 可处理失败、缺能力或结果不明，保留本轮 | paused，记录原因 |
+| 任一非终态 | 必要步骤失败且结束本轮 | failed |
 | 任一非终态 | 取消完成 | cancelled |
 
 `succeeded / failed / cancelled` 是运行终态。终态后修订、重试或历史续跑创建新运行，记录 `forkedFromRunId` 和起点；原运行不变。运行中某次尝试失败可在停留页面选择新尝试；若用户结束本轮则运行进入 failed。
+
+补充状态口径（2026-11-12）：可重试失败、缺能力、输入失效、必要校验失败、发布冲突或外部结果不明而等待处理时，运行进入 `paused` 并保存结构化 `pauseReason`、关联 Step / Attempt / publishJob 和恢复动作；界面的“受阻”是该状态的显示，不另造未定义的 `blocked` 运行状态。用户继续前须解决阻塞并重新校验。只改暂停标记不能取消已经运行的外部任务，立即停止仍走 03 的中断和对账协议。
+
+`succeeded` 要求所有必需输出被有效采用、所有必需发布目标已完成，且无未结执行 / 必需校验 / 发布冲突。采用成功与领域发布成功分别记录；暂停期间完成最后一个确认也保持 paused，显式继续后才能收敛为 succeeded。被明确声明为可选的发布失败单列展示，不能默认为必需发布成功。
+
+恢复保存重启前的暂停原因和取消意图。原 created 且未发起的运行保留 created，原 waiting_review 恢复同一人工待办；原 paused 不因重启自动继续。需要外部对账时进入 recovering，完成对账后仍遵循原意图；取消中的运行不得因发现产物完成而转为系统采用。运行取消是逻辑终止，仍未停止的外部 job 保留独立状态和对账记录，不据 cancelled 声称外部已停止。
 
 ## 3. 节点与尝试状态
 
@@ -51,7 +59,7 @@ Step 保存两个维度，避免“成功但已过期”无法表达：
 - 执行 / 审核状态：`pending / ready / executing / waiting_review / accepted / failed / skipped / cancelled`。
 - 新鲜度：`current / stale`；含 `staleReason` 和受影响输入。
 
-Attempt 状态：`queued → running → succeeded | failed | timed_out | cancelled | outcome_unknown`。
+Attempt 状态：`queued → running → succeeded | failed | timed_out | cancelled`；queued 尚未派发时也可取消。无法确认外部结果时进入 `outcome_unknown`，它是待对账状态，不是可直接重试的失败终态。关闭其写回 token，保留原 Attempt 和外部 job 身份；对账后按已验证结果进入上述终态，记录独立 reconciliation 事件。只有运行、输入和权限仍有效且未取消时，才能通过宿主恢复服务捕获结果并采用；原执行器不能凭失效 token 恢复写入。输入已过期或取消的结果最多留作隔离候选 / 诊断。
 
 Attempt 成功仅表示执行和输出交付契约完成，不代表通过人工审核。普通节点经必要校验后系统采用；只有显式人工节点等待用户。验证器失败仍保存候选和报告，禁止自动采用。
 
@@ -91,13 +99,17 @@ ReviewDecision：`accept / request_changes / reject_candidate / waive_check`。�
 workflow version: (workflowId, version)
 step:             (runId, nodeId)
 attempt:          (stepId, attemptNo)
-request:          (runId, operation, idempotencyKey)
+request:          (scopeId, operation, idempotencyKey)
 completion:       (attemptId, completionId)
 event:            (runId, seq)
 human task:       (stepId, inputFingerprint, taskRevision)
 ```
 
 变更请求带 revision / expectedAdoptionId；人工确认还核对 expectedRunRevision / taskRevision，防止与暂停、取消或基准替换并发时抢跑。冲突返回 409 和服务端现状，不能丢掉本地草稿。输入 hash 用于内容完整性和缓存候选判断，不作为所有运行的唯一身份。
+
+`scopeId` 在创建运行前使用可信操作者 + 产品范围，创建后可绑定 runId，避免 start 请求因尚无 runId 无法去重。保存规范化请求指纹：相同 key / 相同请求返回同一结果，不同请求复用 key 返回冲突。去重记录至少覆盖在途操作、恢复与允许的客户端重放窗口；保留期由 W0 冻结，不能先删记录再恢复旧 outbox。当前采用指针按 Step revision CAS 更新，追加 Adoption 记录本身不替代唯一性约束。
+
+创建运行的请求始终使用创建前的固定 scope 查重，runId 只追加为结果关联；不能在重放时改用 runId 导致重复创建。请求指纹不包含临时 transport / trace 标识，同一业务操作的 HTTP 和 tool 适配使用一致的规范化字段。
 
 ## 7. 任务与验收
 

@@ -3,6 +3,8 @@
 > 适用版本：1.11.0 ｜ 相关代码：`src/shared/product-graph-model.ts`、`src/host/index.ts`（product-* 段）、`src/client/app.ts`（产品域）
 > 自检：`node scripts/verify-product-map.mjs` / `verify-product-module.mjs` / `verify-product-docs.mjs` / `verify-product-archive.mjs`
 
+> 2026-11-12 静态复核：本文描述现有流水线意图及保存层规则，不保证提示词、工具 schema 和真实模型调用已经一致。已发现笔记工具未声明提示词使用的 `kind`、无 moduleId 的模块文档缺少自动幂等键、检查报告可能覆盖产品正文、`product.design` 的 kickoff 交付分支仍回落到灵感工具。进度 done 也未等同于新流程的完整交付验收。具体整改先做 W0 探针，见 [审校记录](documentation-review-2026-11-12.md)；本次未修改代码或复跑业务测试。
+
 ## 1. 为什么颠倒顺序
 
 早期实现是「导图 → AI 拆模块 → 按模块写笔记」。问题：模块是 AI 对图的一次性解释，写完就丢了推导依据；文档只能被动跟着模块，无法反过来修正结构。
@@ -27,7 +29,7 @@
 - 粒度：每张图的每个分组节点（`kind=module|business`）一份；没有分组时按功能聚类自行归纳。
 - 结构：模块背景 / 业务目标与指标 / 角色与权限 / 核心流程（含异常分支）/ 数据与字段 / 与其他模块的边界与依赖 / 多端差异 / 非功能要求 / 验收标准。
 - 硬约束：只依据导图事实；导图没写的写「待确认」，不许编造。
-- 落库：`kind=module_design`，`doc_key = md:<moduleId>`（模块尚不存在时先按标题独立成篇，②之后可补 moduleId）。
+- 保存层支持 `kind=module_design`，有 moduleId 时自动推导 `doc_key = md:<moduleId>`。模块尚不存在时没有该自动键，按标题写入不保证幂等；工具 schema 与该 kind 的一致性仍待修正，不能把本条当成现成的端到端保证。
 
 ### ② 从文档提炼模块
 
@@ -56,6 +58,8 @@
 | D | 产品文档 ↔ 模块文档矛盾 | 以导图解为准改写，并在文档内标注冲突 |
 
 产出：`kind=product_design`、标题「产品名 · 设计一致性检查报告」的 Markdown 表格。
+
+当前上述报告写法与无 moduleId 的产品正文共用 `pd:<产品>`，仅改变标题不能隔离文档身份。新工作流须使用独立报告产物和发布映射；旧流程在完成适配前不能保证同时保留正文与报告。
 
 **绝不修改导图本身**——导图只能人工编辑，或通过有版本可回滚的导入修改。
 
@@ -98,7 +102,7 @@ product_progress  生成进度（kind + step/total + status + log + session_id�
 
 - `notes.doc_key` 唯一索引（`WHERE doc_key <> ''`）——同 scope 重跑更新而非新增。
 - `modules` 幂等键 `(product_id, map_id, name, kind)`。
-- 三张表都有 `archived_at`，列表默认过滤，`?archived=1` 查看全部。
+- 三张表都有 `archived_at`，普通列表支持默认过滤和 `?archived=1`；但当前 `listDesignDocs()` 查询未过滤归档，且仅返回三类设计文档桶，不可据普通列表行为推断此聚合接口也已处理归档。
 
 ## 6. 工作区文件镜像
 

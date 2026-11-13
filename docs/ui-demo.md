@@ -1,6 +1,7 @@
 # UI 设计与 DEMO 生成（1.13）
 
 > 设计文档：`设计文档/00-决策记录.md` ～ `04-实施计划.md`
+> 资料状态（2026-11-11）：当前仓库未包含上述 `设计文档/` 目录；维护时以本文、`src/host/index.ts`、`src/client/app.ts` 与下列自检脚本为可访问入口。后续工作流改造见 [执行计划](execution-plan-2026-11-11.md)。
 > 自检：`scripts/verify-theme.mjs`、`verify-ui-design.mjs`、`verify-demo.mjs`、`verify-ui-demo-tools.mjs`、`verify-demo-page-patch.mjs`、`verify-demo-files.mjs`、`verify-gen-context.mjs`、`verify-demo-cleanup.mjs`
 
 ## 1. 数据表

@@ -11,7 +11,7 @@ typeId / typeVersion / executorVersion
 inputs[]: name, artifactType, schemaVersion, required, multiplicity
 outputs[]: name, artifactType, schemaVersion, editable, multiplicity
 configSchema / defaults / inputBindings
-executor: local | dsh-session | plugin-adapter | human
+executor: local | tool-service | dsh-session | plugin-adapter | human
 tools / skills / modelPolicy / writeScope
 nodeKind: automatic | human
 typeId: human.edit-confirm (人工编辑确认节点；其他人工任务按产品包声明)
@@ -23,6 +23,8 @@ effects: workspace_write | billable | network | external_publish
 ```
 
 所有节点必须声明输出交付位置、硬校验、可编辑方式、失败语义和依赖。MVP 不接受用户上传代码成为节点执行器。
+
+`tool-service` 节点由宿主直接调用已登记业务能力，不必启动模型；冻结 capabilityId / tool schema 指纹、参数映射、输出映射及 effects。需要 Agent 自主选择工具时使用 dsh-session，并冻结允许 tools 集合。工具是可复用能力入口，节点还负责输入绑定、Attempt、输出验证和采用；不能把工具目录中的全部项目自动变成可执行节点。W1 先验证一个假业务能力，领域节点按各自阶段登记。
 
 模型 / 角色 / Skill / MCP 的版本、解析和有效配置证据以 [13 执行配置](13-execution-profiles.md) 为准；原有 tools / skills / modelPolicy 字段需通过适配解析，不以提示词列出名称代替实际注入。完整配置扩展按 E 单列增量。
 
@@ -54,6 +56,35 @@ effects: workspace_write | billable | network | external_publish
 
 [14 聊天协同](14-chat-workflow-studio.md) 复用相同执行器、权限、预算、候选和发布服务。工作流任务保留上述 run / node / attempt 关联；产品讨论使用独立 operation / task 和 session，相关工作流字段允许缺省，不为普通聊天伪造 Run。交接时显式绑定产物来源，切换入口不能再次发起已有执行；对应数据映射在 C0 单独验证。
 
+### 3.1 业务接口开放为 DSH tools
+
+补充日期：2026-11-12。将选定的业务接口注册为 DSH tools，让 Agent 能读取状态、交付候选和调用已授权能力。HTTP API、DSH tool 和工作流执行器都调用同一业务服务，复用 schema、权限校验、幂等和事件；前端仍可通过 HTTP 操作，不要求界面经过模型调用工具。DSH tools 注册不自动等于提供独立 MCP 服务，后者按实际客户端需求另定。
+
+首批开放范围如下。**表中工具名和 HTTP 路径均为拟议，不是当前可调用接口；W0 冻结准确命名、schema 和启用清单。** 领域工具按各产品包阶段加入，不一次包装所有 CRUD。
+
+| 能力 | 拟议 tool / HTTP 操作 | 共用服务职责 | 开放与授权边界 |
+| --- | --- | --- | --- |
+| 查询运行与节点 | `workbench_workflow_get` / `GET /workflows/runs/:id` | 返回步骤、输入版本、能力和可行动作 | W1 假工具适配验证，W2 DSH 注册；按产品和会话范围只读 |
+| 读取产物与执行事件 | `workbench_workflow_artifact_read`、`workbench_workflow_events` / snapshots、events 查询 | 读固定快照，事件按 seq 有界分页 | 仅返回获准内容；明确 cursor、截断和不可用状态，不返回密钥、token 或任意路径文件 |
+| 提交输出候选 | `workbench_workflow_output_submit` / `POST /workflows/attempts/:id/outputs` | 校验 Attempt 身份、staging manifest、schema、文件和 hash，再捕获快照 | W2 专用交付工具；只提交候选，不由 Agent 指定 accepted 或修改正式 notes/modules |
+| 上报进度 | `workbench_workflow_progress` / `POST /workflows/attempts/:id/progress` | 记录有界进度事件，关联本次 Attempt | 不能用 status=done 代替输出验收，也不能自动确认人工节点 |
+| 启动、暂停、继续、取消运行 | `workbench_workflow_start/pause/resume/cancel` / runs 对应命令 | 使用固定模板、预算和输入；检查状态、revision、幂等及实际取消结果 | W0 确定启用子集；只有会话获得控制授权时注册 / 开放，启动和继续需复核副作用与剩余预算；暂停不绕过人工待办 |
+| 查询或取消长任务 | `workbench_workflow_job_get/cancel` / jobs 对应查询与命令 | 复用 jobRef、已确认阶段和对账协议 | 只能控制本调用范围内任务；不提供模型随意重置未知结果或强行重提的入口 |
+| 领域操作，如构建、素材加工、导出 | 各产品包声明的 tools / 领域 API | 复用同一构建或加工服务，输出进入候选链 | 随 W4/P/S 对应阶段启用；费用、文件写入和发布权限分别检查 |
+
+人工确认与正式发布另有边界：
+
+1. 保存人工 Draft、确认 / 驳回 HumanTask 由用户界面调用受认证的人工命令接口；首期不向 Agent 暴露可代替用户确认的 tool。Agent 修订通过候选提交，不能覆盖人工草稿。
+2. 自动节点由调度器在必要校验通过后系统采用；人工节点由确认服务生成 human Adoption。Agent 工具结果不能自行生成“人工已批准”的身份。
+3. 正式 notes/modules/工程发布由已声明目标的 outbox 执行；不开放任意 `force_publish` 或通用数据库写入 tool。旧直写工具须从工作流会话的允许集合排除或受控拦截；无法限制时采用只读 / 人工导入降级。
+4. tool 参数中的 productId、runId、attemptId 是待校验目标，不是授权凭证。宿主从可信调用上下文绑定身份和范围；Attempt 凭证只面向本次交付，日志、返回值与快照不泄露凭证。
+
+工具契约至少包含：名称 / 版本、输入与输出 schema、effectClass、允许范围、错误码、幂等策略和证据字段。变更工具使用 idempotencyKey，涉及当前状态时加 expectedRevision；统一返回 operationId、状态、产物或 jobRef、下一步和结构化错误。控制请求已受理与执行实际完成分别表达，不能把 HTTP 200 或 tool 调用成功等同于业务通过。
+
+人工命令的可信身份必须由宿主验证。仅不注册确认 tool、隐藏按钮、校验 Origin 或请求体填写 actorType=human 都不足以证明人工来源；能够发 HTTP 的 Agent 仍可能访问本机端点。W0 验证宿主提供的交互凭证 / 授权通道及作用域，并测试 Agent 请求不能使用同一通道确认。目标 profile 无法建立该边界时，不将人工确认标为强隔离，阻止依赖此保证的自动写回试点；不为全部旧接口顺带建设另一套账户系统。
+
+实施映射：W0-05/07 冻结 API → 业务服务 → tool 对照表及权限矩阵；W1-10 用假工具适配验证契约；W2-02/08 注册真实 DSH 子集并对照 HTTP 行为验收。C1、W4 和 S 只扩展各自能力，共用桥接层，不新增工具专用队列。M1/M2 不以完整控制工具集和领域扩展全部上线为前置。
+
 ## 4. 调度、暂停和取消
 
 - W1 只跑线性依赖，每个运行一个活跃自动节点；不同运行通过全局配额队列调度。
@@ -70,12 +101,14 @@ MVP 不声称硬限制团队成员并发就是硬限制模型 API 并发；需�
 
 | 可观察结果 | 操作 |
 | --- | --- |
-| 已完成且可验证 | 补记快照与系统采用；未暂停则继续，到人工节点才等待 |
+| 已完成且可验证 | 宿主恢复服务捕获结果；运行未取消、输入仍有效时才允许系统采用，并遵循原暂停意图 |
 | 仍运行、可重新订阅 | 接续观察，不重新发起 |
 | 确认未执行 | 可创建新尝试 |
-| 无法确定 | outcome_unknown，用户选择对账 / 重新执行 |
+| 无法确定 | outcome_unknown，暂停相关运行并续查原任务；不提供默认重新执行 |
 
 fencing token 过期、运行已取消或输入过期的回调只能记事件 / 候选，不更新当前采用和下游状态。
+
+W0 固定租约与心跳默认值、重试次数 / 间隔及超时口径。总自动执行预算跨 Attempt 累计，人工等待单独计时；预算不足暂停，不因重启或更换 Attempt 重置。未知受理只有确认未执行后才能安全重提；无法确认时若用户明确承担重复效果，须记录原 job、重复风险和新 operation 身份，不能伪称幂等重试。
 
 恢复人工节点时读取同一 HumanTask、已保存 Draft 和固定输入；恢复为等待，不重跑上游、不自动确认。暂停状态恢复后仍暂停；暂停中允许保存和确认当前待办，但确认不解除运行暂停，继续需用户显式发起。
 
