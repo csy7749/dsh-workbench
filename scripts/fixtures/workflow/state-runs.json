@@ -1,0 +1,54 @@
+{
+  "scope": "synthetic W0-02 state fixtures; not production seed",
+  "productId": "fixture-product-alpha",
+  "runs": [
+    {
+      "id": "state-run-completed",
+      "status": "completed",
+      "revision": 4,
+      "steps": [
+        {"id":"state-step-generate","status":"completed","adoption":"system"},
+        {"id":"state-step-check","status":"completed","adoption":"system"}
+      ],
+      "resume": {"allowed": false, "reason":"terminal"}
+    },
+    {
+      "id": "state-run-waiting-review",
+      "status": "waiting_review",
+      "revision": 2,
+      "steps": [
+        {"id":"state-step-generate","status":"completed","adoption":"system"},
+        {"id":"state-step-human","status":"waiting_review","adoption":null}
+      ],
+      "humanTask": {"status":"pending","noAutoConfirm":true,"inputFingerprint":"sha256:fixture-input-v1"},
+      "resume": {"allowed": true, "action":"restore_same_human_task_and_draft"}
+    },
+    {
+      "id": "state-run-paused",
+      "status": "paused",
+      "revision": 3,
+      "pauseReason": "publish_conflict",
+      "conflict": {"target":"pd:fixture-product-alpha","expectedRevision":2,"actualRevision":3},
+      "steps": [
+        {"id":"state-step-publish","status":"blocked","adoption":"system"}
+      ],
+      "resume": {"allowed": true, "action":"reconcile_target_then_explicit_resume"}
+    },
+    {
+      "id": "state-run-unknown",
+      "status": "paused",
+      "revision": 5,
+      "pauseReason": "outcome_unknown",
+      "effect": {"status":"outcome_unknown","operationKey":"fixture-operation-1"},
+      "resume": {"allowed": false, "action":"reconcile_original_effect_before_retry"}
+    },
+    {
+      "id": "state-run-conflict",
+      "status": "paused",
+      "revision": 2,
+      "pauseReason": "publish_conflict",
+      "conflict": {"target":"md:fixture-module-books","expectedRevision":1,"actualRevision":2},
+      "resume": {"allowed": false, "action":"rebase_or_start_new_attempt"}
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "fixtureVersion": 1,
+  "purpose": "Synthetic domain inputs; not a production database seed",
+  "products": [
+    {
+      "id": "fixture-product-alpha",
+      "workspace": "fixture-workspace",
+      "name": "示例读书清单",
+      "maps": [
+        {"id": "fixture-map-main", "nodes": [{"id": "fixture-module-books", "kind": "module", "name": "书目管理"}, {"id": "fixture-module-notes", "kind": "module", "name": "阅读笔记"}]},
+        {"id": "fixture-map-secondary", "nodes": [{"id": "fixture-module-export", "kind": "module", "name": "导出管理"}]}
+      ],
+      "documents": [
+        {"id": "fixture-doc-books", "title": "书目模块设计", "docKey": "md:fixture-module-books", "mapId": "fixture-map-main", "moduleId": "fixture-module-books", "kind": "module_design", "content": "支持新增与归档书目。归档不删除历史笔记。"},
+        {"id": "fixture-doc-product", "title": "产品设计", "docKey": "pd:fixture-product-alpha", "mapId": "fixture-map-main", "kind": "product_design", "content": "本地保存书目和阅读笔记。"},
+        {"id": "fixture-doc-audit", "title": "一致性报告", "docKey": "audit:fixture-product-alpha", "mapId": "fixture-map-main", "kind": "audit_report", "content": "待检查导出范围，不得覆盖产品正文。"}
+      ]
+    },
+    {"id": "fixture-product-beta", "workspace": "fixture-workspace", "name": "隔离对照产品", "maps": [{"id": "fixture-map-beta", "nodes": [{"id": "fixture-module-beta", "kind": "module", "name": "对照模块"}]}], "documents": [{"id": "fixture-doc-beta", "title": "对照产品设计", "docKey": "pd:fixture-product-beta", "mapId": "fixture-map-beta", "kind": "product_design", "content": "该正文不得进入 alpha 的输入或发布目标。"}]}
+  ],
+  "storageMapping": {"status": "proposed-not-implemented", "audit_report": {"storageKind": "product_design", "requiredExplicitDocKeyPrefix": "audit:", "warning": "Domain label only. Existing publishProductNote does not forward docKey; do not import through it. W0 must freeze report storage before W2 publication."}},
+  "expectations": ["All IDs are unique", "Alpha inputs exclude beta documents", "Audit and product document identities differ"]
+}

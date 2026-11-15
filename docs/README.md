@@ -41,6 +41,8 @@
 | 产品扩展 | [05 产品包](workflow-plan/05-product-packs.md)、[06 游戏](workflow-plan/06-game-workflow.md)、[07 小说短剧](workflow-plan/07-novel-drama-workflows.md) | 基础试点后分包实施 |
 | 独立扩展 | [14 聊天工作室](workflow-plan/14-chat-workflow-studio.md)、[15 素材工作流](workflow-plan/15-asset-workflow-sprite-gen.md)、[18 项目研习](workflow-plan/18-project-learning-workflow.md) | C / S / L 单独估算和启用；研习先做本地单专题 |
 
+当前实施证据见 [M0 基线记录](evidence/workflow/m0/README.md)（进行中，尚未通过阶段门）。同日另有三份 M0 冻结提案：[发布身份](evidence/workflow/m0/contract-publish-identity.md)、[工具治理](evidence/workflow/m0/contract-tool-governance.md)、[人工节点与采用](evidence/workflow/m0/contract-human-adoption.md)，均待主实施者合并进 02/03/04/08/12。M1 证据见 [M1 记录](evidence/workflow/m1/README.md) 与 [M1 缺口盘点](evidence/workflow/m1/gap-inventory.md)。2026-11-13 新增该记录与三份契约后，docs 下共 41 份 Markdown；此数量包含 evidence 文档。
+
 ## 3. 调查、评估与暂停记录
 
 以下保留原日期和结论。引用中的外部目录、版本、哈希、测试结果均属于当时的现场信息，恢复实施前重验。

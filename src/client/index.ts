@@ -10,6 +10,8 @@
  */
 import { createElement, useEffect, useRef, type ReactElement } from 'react'
 import { mountWorkbench, type WorkbenchHandle } from './app'
+import { installWorkflowReadonlyPanel } from './workflow/readonly-panel'
+import { installWorkflowSandbox } from './workflow/browser-sandbox'
 
 const PANEL_ID = 'workbench'
 const ENTRY_ATTR = 'data-dsh-workbench-entry'
@@ -172,10 +174,21 @@ function installSessionPanelReset(ctx: ClientContext): () => void {
   return dispose
 }
 
+// 保留显式桥接导出；apply 另装配仅连接临时假宿主的操作沙盒，不开放正式写回。
+export { installWorkflowDevelopmentPanel, mountWorkflowDevelopment } from './workflow/development-panel'
+
 export const inject = ['slots', 'layout']
 
 export function apply(ctx: ClientContext): void {
-  const Panel = (): ReactElement => createElement(WorkbenchPanel, { ctx })
+  let SandboxEntry: (() => ReactElement | null) | null = null
+  try {
+    SandboxEntry = installWorkflowSandbox(ctx).Entry
+  } catch (cause) {
+    console.warn('[dsh-workbench] 工作流沙盒初始化失败，工作台主体保持可用：', String(cause))
+  }
+  const Panel = (): ReactElement => createElement('div', { style: { height: '100%', display: 'flex', flexDirection: 'column' } },
+    SandboxEntry === null ? null : createElement('div', null, createElement(SandboxEntry)),
+    createElement('div', { style: { flex: 1, minHeight: 0 } }, createElement(WorkbenchPanel, { ctx })))
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',
     key: PANEL_ID,
@@ -185,4 +198,11 @@ export function apply(ctx: ClientContext): void {
   // 不再注册 sidebar.panellist：工作台入口克隆「新建会话」，与「定时任务」同一套样式。
   mountSidebarEntry(ctx)
   installSessionPanelReset(ctx)
+
+  // B4-3 只读工作流页：面板 key 独立（workflow-readonly），后端 /workbench-workflow
+  // 未启用时探针失败 → 面板渲染 null、不挂侧栏入口、不提示，旧界面一个字都不变。
+  // 这里没有任何写入口：草稿提交/确认/暂停/继续要等可信身份门（M0-B）验证后另批。
+  installWorkflowReadonlyPanel(ctx).catch((cause: unknown) => {
+    console.warn('[dsh-workflow] 只读页初始化失败，已忽略：', String(cause))
+  })
 }

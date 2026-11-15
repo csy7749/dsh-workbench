@@ -10,3 +10,6 @@ node_modules/
 .tmp-*
 
 .dsh-workbench/
+
+# 集中验证脚本的产物目录（scripts/run-workflow-concentrated.mjs 生成）
+.workflow-validation/

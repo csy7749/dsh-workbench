@@ -60,9 +60,9 @@ effects: workspace_write | billable | network | external_publish
 
 补充日期：2026-11-12。将选定的业务接口注册为 DSH tools，让 Agent 能读取状态、交付候选和调用已授权能力。HTTP API、DSH tool 和工作流执行器都调用同一业务服务，复用 schema、权限校验、幂等和事件；前端仍可通过 HTTP 操作，不要求界面经过模型调用工具。DSH tools 注册不自动等于提供独立 MCP 服务，后者按实际客户端需求另定。
 
-首批开放范围如下。**表中工具名和 HTTP 路径均为拟议，不是当前可调用接口；W0 冻结准确命名、schema 和启用清单。** 领域工具按各产品包阶段加入，不一次包装所有 CRUD。
+首批开放范围如下。**本节的冻结补充已由 M0 evidence/workflow/m0/contract-tool-governance.md 定稿：G-01..G-10 的名称、HTTP 路径、effectClass、幂等、错误码与权限边界以该清单为准；它们仍不是当前可调用接口，W1 假适配、W2 真实注册分别验收。** 领域工具按各产品包阶段加入，不一次包装所有 CRUD。
 
-| 能力 | 拟议 tool / HTTP 操作 | 共用服务职责 | 开放与授权边界 |
+| 能力 | 冻结 tool / HTTP 操作（尚未注册） | 共用服务职责 | 开放与授权边界 |
 | --- | --- | --- | --- |
 | 查询运行与节点 | `workbench_workflow_get` / `GET /workflows/runs/:id` | 返回步骤、输入版本、能力和可行动作 | W1 假工具适配验证，W2 DSH 注册；按产品和会话范围只读 |
 | 读取产物与执行事件 | `workbench_workflow_artifact_read`、`workbench_workflow_events` / snapshots、events 查询 | 读固定快照，事件按 seq 有界分页 | 仅返回获准内容；明确 cursor、截断和不可用状态，不返回密钥、token 或任意路径文件 |
@@ -83,7 +83,7 @@ effects: workspace_write | billable | network | external_publish
 
 人工命令的可信身份必须由宿主验证。仅不注册确认 tool、隐藏按钮、校验 Origin 或请求体填写 actorType=human 都不足以证明人工来源；能够发 HTTP 的 Agent 仍可能访问本机端点。W0 验证宿主提供的交互凭证 / 授权通道及作用域，并测试 Agent 请求不能使用同一通道确认。目标 profile 无法建立该边界时，不将人工确认标为强隔离，阻止依赖此保证的自动写回试点；不为全部旧接口顺带建设另一套账户系统。
 
-实施映射：W0-05/07 冻结 API → 业务服务 → tool 对照表及权限矩阵；W1-10 用假工具适配验证契约；W2-02/08 注册真实 DSH 子集并对照 HTTP 行为验收。C1、W4 和 S 只扩展各自能力，共用桥接层，不新增工具专用队列。M1/M2 不以完整控制工具集和领域扩展全部上线为前置。
+实施映射：W0-05/07 已冻结 API → 业务服务 → tool 对照表及权限矩阵；W1-10 用假工具适配验证契约；W2-02/08 注册真实 DSH 子集并对照 HTTP 行为验收。工作流会话当前允许集合为 G-01..G-09 加 3 个只读工作台工具；现有 20 个工具中另保留 1 个进度写工具，其余 16 个排除。人工确认与正式发布不注册为 Agent tool。C1、W4 和 S 只扩展各自能力，共用桥接层，不新增工具专用队列。M1/M2 不以完整控制工具集和领域扩展全部上线为前置。
 
 ## 4. 调度、暂停和取消
 

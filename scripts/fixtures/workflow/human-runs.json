@@ -1,0 +1,184 @@
+{
+  "fixtureVersion": 1,
+  "purpose": "W0-08 的两个运行样例：同一产品、同一输入，一条路径含显式人工节点，一条路径全部自动。只描述结构与绑定关系，不实现调度，也不代表运行验收。",
+  "productId": "fixture-product-alpha",
+  "sourceFixture": "product-design.json",
+  "inputDocKeys": [
+    "md:fixture-module-books",
+    "pd:fixture-product-alpha",
+    "audit:fixture-product-alpha"
+  ],
+  "runs": [
+    {
+      "id": "fixture-run-human",
+      "productId": "fixture-product-alpha",
+      "template": "four-step-with-human",
+      "steps": [
+        {
+          "id": "fixture-step-modules",
+          "order": 1,
+          "kind": "agent",
+          "label": "生成模块设计",
+          "consumes": [],
+          "produces": ["md:fixture-module-books"]
+        },
+        {
+          "id": "fixture-step-human",
+          "order": 2,
+          "kind": "human",
+          "nodeType": "human.edit-confirm",
+          "label": "人工编辑确认",
+          "consumes": ["md:fixture-module-books"],
+          "produces": ["md:fixture-module-books"],
+          "humanTask": {
+            "id": "fixture-human-task-1",
+            "runId": "fixture-run-human",
+            "nodeId": "fixture-step-human",
+            "inputSetId": "fixture-inputset-human-1",
+            "inputFingerprint": "sha256:placeholder-input-set",
+            "expectedRunRevision": 2,
+            "noAutoConfirm": true,
+            "waitingState": "waiting_review"
+          }
+        },
+        {
+          "id": "fixture-step-structure",
+          "order": 3,
+          "kind": "agent",
+          "label": "提炼模块结构",
+          "consumes": ["md:fixture-module-books"],
+          "produces": ["pd:fixture-product-alpha"]
+        },
+        {
+          "id": "fixture-step-report",
+          "order": 4,
+          "kind": "agent",
+          "label": "生成一致性报告",
+          "consumes": ["pd:fixture-product-alpha"],
+          "produces": ["audit:fixture-product-alpha"]
+        }
+      ],
+      "adoptions": [
+        {
+          "id": "fixture-adoption-sys-modules",
+          "stepId": "fixture-step-modules",
+          "actorType": "system",
+          "snapshotId": "fixture-snapshot-modules-sys",
+          "publishTargets": [
+            { "docKey": "md:fixture-module-books", "mode": "required", "expectedRevision": 0, "resultRevision": 1 }
+          ]
+        },
+        {
+          "id": "fixture-adoption-human-modules",
+          "stepId": "fixture-step-human",
+          "actorType": "human",
+          "snapshotId": "fixture-snapshot-modules-human",
+          "parentSnapshotId": "fixture-snapshot-modules-sys",
+          "sameContentAsParent": true,
+          "publishTargets": [
+            { "docKey": "md:fixture-module-books", "mode": "required", "expectedRevision": 1, "resultRevision": 2 }
+          ]
+        },
+        {
+          "id": "fixture-adoption-sys-product",
+          "stepId": "fixture-step-structure",
+          "actorType": "system",
+          "snapshotId": "fixture-snapshot-product-sys",
+          "publishTargets": [
+            { "docKey": "pd:fixture-product-alpha", "mode": "required", "expectedRevision": 0, "resultRevision": 1 }
+          ]
+        },
+        {
+          "id": "fixture-adoption-sys-report",
+          "stepId": "fixture-step-report",
+          "actorType": "system",
+          "snapshotId": "fixture-snapshot-report-sys",
+          "publishTargets": [
+            { "docKey": "audit:fixture-product-alpha", "mode": "required", "expectedRevision": 0, "resultRevision": 1 }
+          ]
+        }
+      ],
+      "expectedStates": {
+        "start": "queued",
+        "atHumanNode": "waiting_review",
+        "afterConfirm": "running",
+        "terminal": "succeeded"
+      },
+      "recovery": {
+        "restartRestores": ["fixture-human-task-1", "draft-after-restart"],
+        "autoConfirmTimeoutMs": null,
+        "rebaseOnUpstreamReplacement": "requires-explicit-action"
+      }
+    },
+    {
+      "id": "fixture-run-auto",
+      "productId": "fixture-product-alpha",
+      "template": "four-step-auto",
+      "steps": [
+        {
+          "id": "fixture-auto-step-modules",
+          "order": 1,
+          "kind": "agent",
+          "label": "生成模块设计",
+          "consumes": [],
+          "produces": ["md:fixture-module-books"],
+          "machineCheck": "schema+input-hash"
+        },
+        {
+          "id": "fixture-auto-step-structure",
+          "order": 2,
+          "kind": "agent",
+          "label": "提炼模块结构",
+          "consumes": ["md:fixture-module-books"],
+          "produces": ["pd:fixture-product-alpha"],
+          "machineCheck": "schema+input-hash"
+        },
+        {
+          "id": "fixture-auto-step-report",
+          "order": 3,
+          "kind": "agent",
+          "label": "生成一致性报告",
+          "consumes": ["pd:fixture-product-alpha"],
+          "produces": ["audit:fixture-product-alpha"],
+          "machineCheck": "schema+input-hash"
+        }
+      ],
+      "adoptions": [
+        {
+          "id": "fixture-auto-adoption-modules",
+          "stepId": "fixture-auto-step-modules",
+          "actorType": "system",
+          "snapshotId": "fixture-auto-snapshot-modules",
+          "publishTargets": [
+            { "docKey": "md:fixture-module-books", "mode": "required", "expectedRevision": 0, "resultRevision": 1 }
+          ]
+        },
+        {
+          "id": "fixture-auto-adoption-product",
+          "stepId": "fixture-auto-step-structure",
+          "actorType": "system",
+          "snapshotId": "fixture-auto-snapshot-product",
+          "publishTargets": [
+            { "docKey": "pd:fixture-product-alpha", "mode": "required", "expectedRevision": 0, "resultRevision": 1 }
+          ]
+        },
+        {
+          "id": "fixture-auto-adoption-report",
+          "stepId": "fixture-auto-step-report",
+          "actorType": "system",
+          "snapshotId": "fixture-auto-snapshot-report",
+          "publishTargets": [
+            { "docKey": "audit:fixture-product-alpha", "mode": "required", "expectedRevision": 0, "resultRevision": 1 }
+          ]
+        }
+      ],
+      "expectedStates": {
+        "start": "queued",
+        "atHumanNode": null,
+        "afterConfirm": null,
+        "terminal": "succeeded"
+      },
+      "noEmptyHumanTask": true
+    }
+  ]
+}
