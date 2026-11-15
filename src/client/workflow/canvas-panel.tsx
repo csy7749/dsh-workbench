@@ -878,73 +878,8 @@ export function CanvasEntry(props: { ctx: ClientContext }): ReactElement {
   )
 }
 
-interface SidebarController { dispose(): void }
 
-function nativeButton(): HTMLButtonElement | undefined {
-  for (const node of Array.from(document.querySelectorAll<HTMLButtonElement>('button[class*="newSession"]'))) {
-    if (String(node.className).indexOf('newSessionLabel') === -1) return node
-  }
-  return undefined
-}
-
-/** 侧栏入口：克隆原生「新建会话」按钮，插在工作台入口之后。 */
-export function mountWorkflowCanvasEntry(ctx: ClientContext): SidebarController {
-  ensureCss()
-  const win = window as unknown as Record<string, SidebarController | undefined>
-  win[ENTRY_HANDLE]?.dispose()
-  document.querySelectorAll('[' + ENTRY_ATTR + ']').forEach(node => node.remove())
-
-  let entry: HTMLButtonElement | null = null
-  let disposed = false
-  const place = (): void => {
-    if (disposed) return
-    const target = nativeButton()
-    if (target === undefined || target.parentElement === null) return
-    if (entry === null) {
-      entry = target.cloneNode(true) as HTMLButtonElement
-      entry.className = String(target.className) + ' dsh-workflow-canvas-entry-clone'
-      entry.setAttribute(ENTRY_ATTR, '')
-      entry.setAttribute('data-dsh-plugin', 'dsh-workbench')
-      entry.setAttribute('data-dsh-part', 'workflow-canvas-entry')
-      entry.setAttribute('aria-label', '工作流画布')
-      entry.removeAttribute('id')
-      entry.innerHTML = ''
-      const icon = document.createElement('span')
-      icon.className = 'dsh-workbench-entry-icon'
-      icon.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="7" height="6" rx="1.5"></rect><rect x="14" y="14" width="7" height="6" rx="1.5"></rect><path d="M10 7h4a3 3 0 0 1 3 3v4"></path></svg>'
-      const label = document.createElement('span')
-      label.className = 'dsh-workbench-entry-label'
-      label.textContent = '工作流画布'
-      entry.appendChild(icon)
-      entry.appendChild(label)
-      entry.addEventListener('click', event => {
-        event.preventDefault()
-        event.stopPropagation()
-        try { ctx.layout?.selectPanel(WORKFLOW_CANVAS_PANEL_KEY) } catch (cause) { console.warn('[dsh-workflow] 打开画布失败：', String(cause)) }
-      })
-    }
-    const anchor = document.querySelector('[data-dsh-workflow-canvas-entry], [data-dsh-workbench-entry], [data-dsh-plugin="dsh-cron"][data-dsh-part="sidebar-entry"]') ?? target
-    if (anchor !== entry && entry.previousElementSibling !== anchor) anchor.insertAdjacentElement('afterend', entry)
-  }
-  const observer = new MutationObserver(place)
-  observer.observe(document.body, { childList: true, subtree: true })
-  const timer = window.setInterval(place, 2000)
-  place()
-
-  const controller: SidebarController = {
-    dispose(): void {
-      disposed = true
-      observer.disconnect()
-      window.clearInterval(timer)
-      entry?.remove()
-      entry = null
-    },
-  }
-  win[ENTRY_HANDLE] = controller
-  return controller
-}
-
-/** 注册画布面板（main 插槽）+ 侧栏入口。面板 key 独立，不影响工作台主体。 */
+/** 注册画布面板（main 插槽）。入口只有工作台面板顶部那一个按钮，侧栏不再重复挂。 */
 export function installWorkflowCanvasPanel(ctx: ClientContext): void {
   ensureCss()
   ctx.slots.inject('main', () => ctx.slots.register({
@@ -952,5 +887,4 @@ export function installWorkflowCanvasPanel(ctx: ClientContext): void {
     key: WORKFLOW_CANVAS_PANEL_KEY,
     inject: () => ({}),
   }, CanvasPanel))
-  mountWorkflowCanvasEntry(ctx)
 }
