@@ -57,6 +57,16 @@ interface Catalog {
 
 interface GraphRow { id: string; name: string; line: string; revision: number; updated_at: string; nodes: number; edges: number }
 
+interface RunStep { nodeId: string; title: string; type: string; kind: 'human' | 'agent' | 'static'; state: string; stale: boolean; content: string }
+interface RunWaiting { kind: string; nodeId: string | null; title: string; taskId: string | null; content: string }
+interface RunView { runId: string; status: string; steps: RunStep[]; waiting: RunWaiting | null }
+
+const RUN_STATUS: Record<string, string> = {
+  created: '已创建', running: '运行中', waiting_review: '等人工确认', paused: '已暂停',
+  completed: '已完成', failed: '失败', cancelled: '已取消',
+}
+
+
 interface ApiResult<T> { ok: boolean; error?: string; data?: T }
 
 async function call<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
@@ -173,6 +183,23 @@ const CSS = `
 .wf-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);padding:7px 14px;border-radius:6px;font-size:12px;z-index:9;
   background:rgba(30,34,42,.96);border:1px solid rgba(255,255,255,.16);box-shadow:0 8px 24px rgba(0,0,0,.4);max-width:70%}
 .wf-toast[data-kind="err"]{border-color:rgba(248,113,113,.6);color:#fca5a5}
+.wf-run{position:absolute;right:12px;bottom:12px;width:min(520px,72%);max-height:64%;display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:9px;z-index:8;
+  background:rgba(26,30,38,.97);border:1px solid rgba(255,255,255,.16);box-shadow:0 12px 32px rgba(0,0,0,.45);font-size:12px}
+.wf-run-head{display:flex;align-items:center;gap:8px;flex:none}
+.wf-run-head b{font-size:12px;font-weight:600}
+.wf-badge{padding:1px 7px;border-radius:9px;font-size:10.5px;border:1px solid rgba(255,255,255,.22);opacity:.85}
+.wf-badge[data-s="completed"]{border-color:rgba(52,211,153,.7);color:#6ee7b7}
+.wf-badge[data-s="waiting_review"]{border-color:rgba(251,191,36,.7);color:#fcd34d}
+.wf-badge[data-s="failed"]{border-color:rgba(248,113,113,.7);color:#fca5a5}
+.wf-run-steps{overflow:auto;display:flex;flex-direction:column;gap:3px;font-size:11.5px;max-height:170px}
+.wf-run-step{display:flex;gap:6px;align-items:center;padding:3px 6px;border-radius:5px;background:rgba(255,255,255,.04)}
+.wf-run-step[data-on="1"]{background:rgba(96,165,250,.16);outline:1px solid rgba(96,165,250,.45)}
+.wf-run-step i{width:6px;height:6px;border-radius:50%;background:#64748b;flex:none}
+.wf-run-step[data-st="succeeded"] i{background:#34d399}
+.wf-run-step[data-st="waiting_review"] i{background:#fbbf24}
+.wf-run-step[data-st="running"] i{background:#60a5fa}
+.wf-run-wait{display:flex;flex-direction:column;gap:6px;flex:none;border-top:1px solid rgba(255,255,255,.1);padding-top:8px}
+.wf-run-wait textarea{min-height:64px;max-height:130px;resize:vertical;font-size:11.5px;line-height:1.5;padding:6px 8px;border-radius:6px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.14);color:inherit}
 .wf-legend{display:flex;gap:10px;flex-wrap:wrap;font-size:10.5px;opacity:.6;padding:6px 12px;border-top:1px solid rgba(255,255,255,.07);flex:none}
 .wf-legend span{display:inline-flex;align-items:center;gap:4px}
 .wf-legend i{width:7px;height:7px;border-radius:50%;display:inline-block}
@@ -456,6 +483,120 @@ export function CanvasPanel(): ReactElement {
     }))
   }
 
+  /* 运行：把当前画布交给宿主编译成步骤后逐步推进。生成类节点必须有人提交真实正文，
+     所以这里只提供「提交 / 确认 / 导出」三个动作，不做任何自动填充。 */
+  const [run, setRun] = useState<RunView | null>(null)
+  const [runText, setRunText] = useState('')
+  const [runBusy, setRunBusy] = useState(false)
+
+  const applyRun = (data: any): void => {
+    const next = (data?.view ?? data) as RunView | undefined
+    if (next === undefined || next === null) return
+    setRun(next)
+    setRunText('')
+  }
+
+  const startRun = async (): Promise<void> => {
+    if (doc === null) return
+    setRunBusy(true)
+    try {
+      const result = await call<any>('/runs', { method: 'POST', body: JSON.stringify({ graphId: doc.id }) })
+      if (!result.ok) { setMsg({ kind: 'err', text: '起运行失败：' + result.error }); return }
+      applyRun(result.data)
+      setMsg({ kind: 'ok', text: '运行已创建，按提示逐步推进' })
+    } finally { setRunBusy(false) }
+  }
+
+  const submitRun = async (): Promise<void> => {
+    if (run === null || runText.trim() === '') { setMsg({ kind: 'err', text: '内容不能为空' }); return }
+    setRunBusy(true)
+    try {
+      const result = await call<any>('/runs/' + encodeURIComponent(run.runId) + '/submit', { method: 'POST', body: JSON.stringify({ content: runText }) })
+      if (!result.ok) { setMsg({ kind: 'err', text: result.error ?? '提交失败' }); return }
+      applyRun(result.data)
+    } finally { setRunBusy(false) }
+  }
+
+  const confirmRun = async (): Promise<void> => {
+    if (run === null || run.waiting === null) return
+    setRunBusy(true)
+    try {
+      const content = runText === '' ? (run.waiting.content ?? '') : runText
+      const result = await call<any>('/runs/' + encodeURIComponent(run.runId) + '/confirm', { method: 'POST', body: JSON.stringify({ taskId: run.waiting.taskId, content }) })
+      if (!result.ok) { setMsg({ kind: 'err', text: result.error ?? '确认失败' }); return }
+      applyRun(result.data)
+    } finally { setRunBusy(false) }
+  }
+
+  const advanceRun = async (): Promise<void> => {
+    if (run === null) return
+    setRunBusy(true)
+    try {
+      const result = await call<any>('/runs/' + encodeURIComponent(run.runId) + '/advance', { method: 'POST', body: JSON.stringify({}) })
+      if (!result.ok) { setMsg({ kind: 'err', text: result.error ?? '推进失败' }); return }
+      applyRun(result.data)
+    } finally { setRunBusy(false) }
+  }
+
+  const exportRun = async (): Promise<void> => {
+    if (run === null) return
+    setRunBusy(true)
+    try {
+      const result = await call<{ dir: string; files: string[] }>('/runs/' + encodeURIComponent(run.runId) + '/export', { method: 'POST', body: JSON.stringify({}) })
+      if (!result.ok) { setMsg({ kind: 'err', text: result.error ?? '导出失败' }); return }
+      setMsg({ kind: 'ok', text: '已导出 ' + (result.data?.files.length ?? 0) + ' 个文件到 ' + (result.data?.dir ?? '') })
+    } finally { setRunBusy(false) }
+  }
+
+  const runDrawer = (): ReactElement | null => {
+    if (run === null) return null
+    const waiting = run.waiting
+    return h('div', { className: 'wf-run' },
+      h('div', { className: 'wf-run-head' },
+        h('b', null, '运行 · ' + run.runId.slice(-6)),
+        h('span', { className: 'wf-badge', 'data-s': run.status }, RUN_STATUS[run.status] ?? run.status),
+        h('span', { className: 'wf-sp' }),
+        h('button', { type: 'button', className: 'wf-btn', disabled: runBusy || run.status !== 'completed', onClick: () => { void exportRun() } }, '导出产物'),
+        h('button', { type: 'button', className: 'wf-btn', onClick: () => setRun(null) }, '收起'),
+      ),
+      h('div', { className: 'wf-run-steps' }, run.steps.map(step => h('div', {
+        key: step.nodeId, className: 'wf-run-step',
+        'data-st': step.state, 'data-on': waiting?.nodeId === step.nodeId ? '1' : '0',
+      },
+        h('i', null),
+        h('span', { style: { flex: '1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, step.title),
+        h('span', { style: { opacity: 0.5, fontSize: '10.5px' } }, step.kind === 'human' ? '人工' : step.kind === 'agent' ? '模型' : '程序'),
+        h('span', { style: { opacity: 0.45, fontSize: '10.5px' } }, step.state === 'succeeded' ? (step.content.length + ' 字') : step.state === 'pending' ? '待执行' : step.state),
+      ))),
+      waiting === null
+        ? (run.status === 'completed'
+            ? h('div', { className: 'wf-hint' }, '这条流程已经跑完，每一步都有被采用的产物快照。点「导出产物」写到磁盘。')
+            : null)
+        : h('div', { className: 'wf-run-wait' },
+            h('div', { className: 'wf-hint' },
+              waiting.kind === 'human'
+                ? '停在第 ' + run.steps.filter(step => step.state === 'succeeded').length + ' 步之后：' + waiting.title + ' 需要人工确认。可直接确认，也可以先改正文。'
+                : waiting.kind === 'agent'
+                  ? '下一步「' + waiting.title + '」要真实正文：把内容填进下面的框再提交（模型节点不会自动编造）。'
+                  : '下一步「' + waiting.title + '」是程序节点，点继续即可。'),
+            waiting.kind === 'static'
+              ? h('div', { style: { display: 'flex', gap: '8px' } },
+                  h('button', { type: 'button', className: 'wf-btn', 'data-primary': '1', disabled: runBusy, onClick: () => { void advanceRun() } }, '继续'))
+              : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
+                  h('textarea', {
+                    value: runText === '' ? (waiting.content ?? '') : runText,
+                    onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => setRunText(event.target.value),
+                    placeholder: waiting.kind === 'human' ? '确认前可编辑正文…' : '粘贴这一步的产出正文…',
+                  }),
+                  h('div', { style: { display: 'flex', gap: '8px' } },
+                    h('button', {
+                      type: 'button', className: 'wf-btn', 'data-primary': '1', disabled: runBusy,
+                      onClick: () => { void (waiting.kind === 'human' ? confirmRun() : submitRun()) },
+                    }, waiting.kind === 'human' ? '确认并继续' : '提交并继续'))),
+          ),
+    )
+  }
+
   return h('div', { className: 'wf dsh-wf-root', 'data-dsh-workflow-canvas': '' },
     /* 顶部条 */
     h('div', { className: 'wf-top' },
@@ -478,6 +619,7 @@ export function CanvasPanel(): ReactElement {
         dirty ? '保存改动' : '已保存'),
       h('button', { type: 'button', className: 'wf-btn', disabled: doc === null, onClick: runCheck }, '校验'),
       h('button', { type: 'button', className: 'wf-btn', disabled: doc === null, onClick: runPlan }, '执行预演'),
+      h('button', { type: 'button', className: 'wf-btn', 'data-primary': '1', disabled: doc === null || runBusy, title: '把这张图真的跑起来：程序节点自动过，模型节点等你提交正文，人工节点等你确认', onClick: () => { void startRun() } }, run === null ? '开始运行' : '重新运行'),
       h('span', { className: 'wf-sp' }),
       h('span', { style: { fontSize: '11px', opacity: 0.5 } }, doc === null ? '未打开画布' : 'v' + doc.revision + ' · ' + graph!.nodes.length + ' 节点 / ' + graph!.edges.length + ' 线 · ' + Math.round(view.scale * 100) + '%'),
       doc === null ? null : h('button', { type: 'button', className: 'wf-btn', onClick: () => { void removeGraph() } }, '删除'),
@@ -704,6 +846,7 @@ export function WorkflowSidePanel(props: SideProps): ReactElement {
                     )),
           ),
     ),
+    runDrawer(),
   )
 }
 

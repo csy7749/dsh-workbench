@@ -6744,7 +6744,13 @@ export function apply(ctx: any): void {
   let canvasModule: ReturnType<typeof createWorkflowCanvasModule> | null = null
   try {
     if (typeof (store as any).connection === 'function') {
-      canvasModule = createWorkflowCanvasModule({ db: (store as any).connection(), prefix: PREFIX })
+      const dataDir = dirname(store.file)
+      canvasModule = createWorkflowCanvasModule({
+        db: (store as any).connection(),
+        prefix: PREFIX,
+        runsDbPath: join(dataDir, 'workflow-runs.sqlite'),
+        runsRoot: join(dataDir, 'workflow-runs'),
+      })
     }
   } catch (cause) {
     console.warn('[dsh-workbench] 工作流画布初始化失败（其它功能不受影响）：', String(cause))
