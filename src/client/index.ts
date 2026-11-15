@@ -12,7 +12,6 @@ import { createElement, useEffect, useRef, type ReactElement } from 'react'
 import { mountWorkbench, type WorkbenchHandle } from './app'
 import { installWorkflowReadonlyPanel } from './workflow/readonly-panel'
 import { CanvasEntry, installWorkflowCanvasPanel } from './workflow/canvas-panel'
-import { installWorkflowSandbox } from './workflow/browser-sandbox'
 
 const PANEL_ID = 'workbench'
 const ENTRY_ATTR = 'data-dsh-workbench-entry'
@@ -175,21 +174,11 @@ function installSessionPanelReset(ctx: ClientContext): () => void {
   return dispose
 }
 
-// 保留显式桥接导出；apply 另装配仅连接临时假宿主的操作沙盒，不开放正式写回。
-export { installWorkflowDevelopmentPanel, mountWorkflowDevelopment } from './workflow/development-panel'
-
 export const inject = ['slots', 'layout']
 
 export function apply(ctx: ClientContext): void {
-  let SandboxEntry: (() => ReactElement | null) | null = null
-  try {
-    SandboxEntry = installWorkflowSandbox(ctx).Entry
-  } catch (cause) {
-    console.warn('[dsh-workbench] 工作流沙盒初始化失败，工作台主体保持可用：', String(cause))
-  }
   const Panel = (): ReactElement => createElement('div', { style: { height: '100%', display: 'flex', flexDirection: 'column' } },
     createElement(CanvasEntry, { ctx }),
-    SandboxEntry === null ? null : createElement('div', null, createElement(SandboxEntry)),
     createElement('div', { style: { flex: 1, minHeight: 0 } }, createElement(WorkbenchPanel, { ctx })))
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',

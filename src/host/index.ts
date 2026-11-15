@@ -50,7 +50,6 @@ import {
 /* 工作流内测页薄挂载（W1-07/A13）：默认关闭，独立路由与独立库文件；
    初始化失败在 mountWorkflowPage 内部收敛成 503，不影响下面的 /workbench-api。 */
 import { mountWorkflowPage, WORKFLOW_PAGE_PREFIX } from './workflow-page.js'
-import { mountBrowserWorkflow } from '../workflow/m0-browser-transport.mjs'
 export { mountWorkflowPage, workflowPageEnabled, WORKFLOW_PAGE_PREFIX, WORKFLOW_PAGE_ENABLED_ENV } from './workflow-page.js'
 import { syncDelta, syncMeta, syncPush, writeTombstone, type SyncHooks } from './sync.js'
 import {
@@ -7663,16 +7662,6 @@ export function apply(ctx: any): void {
   const route = { kind: 'prefix', path: PREFIX, handler }
   if (typeof ctx.effect === 'function') ctx.effect(() => webServer.register(route), 'workbench: /workbench-api')
   else webServer.register(route)
-
-  // 独立临时假执行器沙盒；无可信浏览器准入能力时接口保持拒绝。
-  if (ctx.connection && typeof ctx.connection.admit === 'function' && ctx.connection.browserPeer) mountBrowserWorkflow({
-    connection: ctx.connection,
-    register: (value: any) => webServer.register(value),
-    onDispose: (dispose: () => void) => {
-      if (typeof ctx.effect === 'function') ctx.effect(() => dispose, 'workbench: workflow sandbox')
-      else ctx.on?.('dispose', dispose)
-    },
-  })
 
   /* 工作流内测页（W1-07/A13）：默认关闭的薄挂载，独立路由 + 独立库文件。
      关闭、缺少 SQLite、库路径与旧库冲突、初始化失败四种情况都只影响这条路由本身：
