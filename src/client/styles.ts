@@ -113,6 +113,11 @@ button{font:inherit;color:inherit}
 .btn-primary:hover{filter:brightness(1.06)}
 .workspace{flex:1;min-height:0;display:flex}
 .content{flex:1;min-width:0;overflow:auto;padding:20px 24px 48px}
+/* 流程视图（产品流程 / 工作流模板）：内容区交给画布自己滚动，这里只负责把高度打通。 */
+.app.flow-mode .content{padding:18px 20px 0;overflow:hidden;display:flex;min-height:0}
+.app.flow-mode .content>#wb-generic{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column}
+.wf-host{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--surface);margin-bottom:16px}
+.wf-host>.wf{flex:1;min-height:0;height:auto}
 .detail{width:318px;flex:0 0 318px;border-left:1px solid var(--line);background:var(--panel);overflow:auto;display:flex;flex-direction:column}
 .detail.hide{display:none}
 /* ---------- shared ---------- */

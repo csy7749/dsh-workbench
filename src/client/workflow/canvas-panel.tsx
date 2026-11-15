@@ -8,6 +8,7 @@
  * 面板自己带 shadow root，样式与工作台主体隔离，颜色全部走 DSH 主题变量。
  */
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import {
   CATEGORIES, PRODUCT_LINES, TEMPLATES, defById, emptyGraph, lineOf, summarizeIssues,
   TYPE_LABEL, canConnect, planOf, validateGraph,
@@ -31,14 +32,6 @@ const PORT_TOP = 44
 const PORT_GAP = 22
 const MIN_SCALE = 0.3
 const MAX_SCALE = 2.2
-
-interface ClientContext {
-  slots: {
-    inject(slot: string, contribute: () => unknown): unknown
-    register(options: Record<string, unknown>, component: unknown): unknown
-  }
-  layout?: { selectPanel(panelId: string | null): void }
-}
 
 const h = createElement
 
@@ -227,7 +220,7 @@ interface DragState {
   fromY: number
 }
 
-export function CanvasPanel(): ReactElement {
+export function CanvasPanel(props: CanvasScope = {}): ReactElement {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [list, setList] = useState<GraphRow[]>([])
   const [doc, setDoc] = useState<{ id: string; revision: number; graph: WorkflowGraph } | null>(null)
@@ -260,10 +253,12 @@ export function CanvasPanel(): ReactElement {
 
   useEffect(() => { ensureCss() }, [])
 
+  const productPath = props.productPath ?? ''
   const refreshList = useCallback(async () => {
-    const result = await call<{ graphs: GraphRow[] }>('/graphs')
+    const query = productPath === '' ? '' : '?product=' + encodeURIComponent(productPath)
+    const result = await call<{ graphs: GraphRow[] }>('/graphs' + query)
     if (result.ok) setList(result.data?.graphs ?? [])
-  }, [])
+  }, [productPath])
 
   useEffect(() => {
     let alive = true
@@ -296,7 +291,9 @@ export function CanvasPanel(): ReactElement {
 
   const createGraph = useCallback(async (templateId?: string) => {
     setBusy(true)
-    const body = templateId === undefined ? { line, graph: emptyGraph(line, lineOf(line).name + ' 流程') } : { templateId }
+    const body = templateId === undefined
+      ? { line, graph: emptyGraph(line, lineOf(line).name + ' 流程'), productId: productPath }
+      : { templateId, productId: productPath }
     const result = await call<{ graph: WorkflowGraph; row: GraphRow }>('/graphs', { method: 'POST', body: JSON.stringify(body) })
     setBusy(false)
     if (!result.ok || result.data === undefined) { toast('err', result.error ?? '新建失败'); return }
@@ -310,7 +307,7 @@ export function CanvasPanel(): ReactElement {
     setView({ x: 40, y: 30, scale: 1 })
     await refreshList()
     toast('ok', '已新建「' + result.data.graph.name + '」，共 ' + result.data.graph.nodes.length + ' 个节点')
-  }, [line, refreshList, toast])
+  }, [line, productPath, refreshList, toast])
 
   const save = useCallback(async () => {
     const current = docRef.current
@@ -855,36 +852,21 @@ function planLabel(plan: Plan): string {
 }
 
 /* ------------------------------------------------------------------ *
- * 入口：工作台顶部按钮 + 侧栏按钮
+ * 嵌入：工作台自己的视图里挂载（研发 → 工作流模板 / 产品 → 流程）
  * ------------------------------------------------------------------ */
 
-const ENTRY_ATTR = 'data-dsh-workflow-canvas-entry'
-const ENTRY_HANDLE = '__dshWorkflowCanvasEntry'
-
-/** 工作台面板顶部的「工作流画布」按钮：和工作流沙盒按钮并排，点它切到画布面板。 */
-export function CanvasEntry(props: { ctx: ClientContext }): ReactElement {
-  ensureCss()
-  return h('div', { style: { flex: 'none', padding: '6px 10px', display: 'flex', gap: '8px' } },
-    h('button', {
-      type: 'button',
-      className: 'wf-btn',
-      'data-primary': '1',
-      style: { fontSize: '12px' },
-      onClick: () => {
-        try { props.ctx.layout?.selectPanel(WORKFLOW_CANVAS_PANEL_KEY) } catch (cause) { console.warn('[dsh-workflow] 打开画布失败：', String(cause)) }
-      },
-    }, '工作流画布'),
-    h('span', { style: { fontSize: '11px', opacity: 0.5, alignSelf: 'center' } }, '节点式 · 拖拽连线 · 游戏 / 小说 / 短剧'),
-  )
+/** 画布作用域：productPath 为空表示「还没有归属产品的模板草稿」。 */
+export interface CanvasScope {
+  productPath?: string
 }
 
-
-/** 注册画布面板（main 插槽）。入口只有工作台面板顶部那一个按钮，侧栏不再重复挂。 */
-export function installWorkflowCanvasPanel(ctx: ClientContext): void {
+/**
+ * 把画布挂进一个普通 DOM 容器（app.ts 里的视图宿主容器）。
+ * 返回卸载函数；同一个容器重复挂载前必须先调它，否则 React 会报容器已被占用。
+ */
+export function mountCanvasInto(container: HTMLElement, scope: CanvasScope = {}): () => void {
   ensureCss()
-  ctx.slots.inject('main', () => ctx.slots.register({
-    name: 'main',
-    key: WORKFLOW_CANVAS_PANEL_KEY,
-    inject: () => ({}),
-  }, CanvasPanel))
+  const root = createRoot(container)
+  root.render(h(CanvasPanel, scope))
+  return () => { try { root.unmount() } catch { /* 容器已被上层移除，忽略 */ } }
 }

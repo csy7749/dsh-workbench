@@ -14,6 +14,8 @@ export interface GraphRow {
   id: string
   name: string
   line: string
+  /** 归属产品的 DSH 工作区路径；空串=还没挂到具体产品（模板库里造出来的草稿）。 */
+  product_id: string
   revision: number
   created_at: string
   updated_at: string
@@ -33,6 +35,7 @@ const SCHEMA = [
   '  id TEXT PRIMARY KEY,',
   '  name TEXT NOT NULL DEFAULT "",',
   '  line TEXT NOT NULL DEFAULT "game",',
+  "  product_id TEXT NOT NULL DEFAULT '',",
   '  graph_json TEXT NOT NULL DEFAULT "",',
   "  revision INTEGER NOT NULL DEFAULT 1,",
   '  created_at TEXT NOT NULL,',
@@ -46,6 +49,7 @@ export interface SaveInput {
   id?: string
   name?: string
   line?: string
+  productId?: string
   graph?: unknown
   /** 乐观锁：传了就必须与库里改前的 revision 相同，否则冲突 */
   baseRevision?: number
@@ -66,6 +70,16 @@ export class WorkflowCanvasStore {
   constructor(db: any) {
     this.db = db
     this.db.exec(SCHEMA)
+    this.migrate()
+  }
+
+  /** 老库补列：wf_graphs 早先没有 product_id，直接建新表会让已有画布全丢。 */
+  private migrate(): void {
+    const columns = (this.db.prepare('PRAGMA table_info(wf_graphs)').all() as any[]).map(item => String(item.name))
+    if (!columns.includes('product_id')) {
+      this.db.exec("ALTER TABLE wf_graphs ADD COLUMN product_id TEXT NOT NULL DEFAULT ''")
+    }
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_wf_graphs_product ON wf_graphs(product_id, deleted_at, updated_at DESC)")
   }
 
   private row(raw: any): GraphRow | null {
@@ -75,6 +89,7 @@ export class WorkflowCanvasStore {
       id: String(raw.id),
       name: String(raw.name ?? ''),
       line: String(raw.line ?? 'game'),
+      product_id: String(raw.product_id ?? ''),
       revision: Number(raw.revision ?? 1),
       created_at: String(raw.created_at ?? ''),
       updated_at: String(raw.updated_at ?? ''),
@@ -92,8 +107,12 @@ export class WorkflowCanvasStore {
     }
   }
 
-  list(): GraphRow[] {
-    const rows = this.db.prepare('SELECT id, name, line, graph_json, revision, created_at, updated_at FROM wf_graphs WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 200').all()
+  /** productId 为 undefined 时列出全部（模板库），传空串只列未归属的。 */
+  list(productId?: string): GraphRow[] {
+    const sql = productId === undefined
+      ? 'SELECT id, name, line, product_id, graph_json, revision, created_at, updated_at FROM wf_graphs WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 200'
+      : 'SELECT id, name, line, product_id, graph_json, revision, created_at, updated_at FROM wf_graphs WHERE deleted_at IS NULL AND product_id = ? ORDER BY updated_at DESC LIMIT 200'
+    const rows = productId === undefined ? this.db.prepare(sql).all() : this.db.prepare(sql).all(productId)
     return (rows as any[]).map(item => this.row(item)).filter((item): item is GraphRow => item !== null)
   }
 
@@ -114,8 +133,8 @@ export class WorkflowCanvasStore {
     if (bytes > GRAPH_LIMITS.bytes) return { ok: false, error: '画布太大（' + bytes + ' 字节，上限 ' + GRAPH_LIMITS.bytes + '）' }
     const id = 'wf-' + randomUUID().slice(0, 8)
     const stamp = now()
-    this.db.prepare('INSERT INTO wf_graphs (id, name, line, graph_json, revision, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)')
-      .run(id, graph.name, graph.line, JSON.stringify(graph), stamp, stamp)
+    this.db.prepare('INSERT INTO wf_graphs (id, name, line, product_id, graph_json, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)')
+      .run(id, graph.name, graph.line, String(input.productId ?? ''), JSON.stringify(graph), stamp, stamp)
     const saved = this.get(id)
     return { ok: true, row: saved?.row, graph, issues }
   }
@@ -147,10 +166,10 @@ export class WorkflowCanvasStore {
   }
 
   /** 从模板新建：模板本身只读，落库时给一份独立副本。 */
-  createFromTemplate(templateId: string): SaveResult {
+  createFromTemplate(templateId: string, productId?: string): SaveResult {
     const graph = templateOf(templateId)
     if (graph === null) return { ok: false, error: '没有这个模板：' + templateId }
-    return this.create({ graph, name: graph.name })
+    return this.create({ graph, name: graph.name, productId })
   }
 
   plan(id: string): { ok: boolean; plan?: ReturnType<typeof planOf>; issues?: GraphIssue[]; error?: string } {

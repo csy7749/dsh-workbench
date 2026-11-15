@@ -224,18 +224,20 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
 
     if (parts.length === 1) {
       if (method === 'GET') {
-        send(res, 200, { ok: true, graphs: store.list() })
+        const product = url.searchParams.get('product')
+        send(res, 200, { ok: true, graphs: store.list(product === null ? undefined : product) })
         return true
       }
       if (method === 'POST') {
         const body = await readJson(req)
+        const productId = typeof body.productId === 'string' ? body.productId : undefined
         if (typeof body.templateId === 'string' && body.templateId !== '') {
-          const result = store.createFromTemplate(body.templateId)
+          const result = store.createFromTemplate(body.templateId, productId)
           if (!result.ok) { fail(res, 400, result.error ?? '新建失败'); return true }
           send(res, 201, { ok: true, row: result.row, graph: result.graph, issues: result.issues ?? [] })
           return true
         }
-        const result = store.create({ name: body.name, line: body.line, graph: body.graph })
+        const result = store.create({ name: body.name, line: body.line, graph: body.graph, productId })
         if (!result.ok) { fail(res, 400, result.error ?? '新建失败'); return true }
         send(res, 201, { ok: true, row: result.row, graph: result.graph, issues: result.issues ?? [] })
         return true

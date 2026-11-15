@@ -11,7 +11,6 @@
 import { createElement, useEffect, useRef, type ReactElement } from 'react'
 import { mountWorkbench, type WorkbenchHandle } from './app'
 import { installWorkflowReadonlyPanel } from './workflow/readonly-panel'
-import { CanvasEntry, installWorkflowCanvasPanel } from './workflow/canvas-panel'
 
 const PANEL_ID = 'workbench'
 const ENTRY_ATTR = 'data-dsh-workbench-entry'
@@ -178,7 +177,6 @@ export const inject = ['slots', 'layout']
 
 export function apply(ctx: ClientContext): void {
   const Panel = (): ReactElement => createElement('div', { style: { height: '100%', display: 'flex', flexDirection: 'column' } },
-    createElement(CanvasEntry, { ctx }),
     createElement('div', { style: { flex: 1, minHeight: 0 } }, createElement(WorkbenchPanel, { ctx })))
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',
@@ -197,11 +195,7 @@ export function apply(ctx: ClientContext): void {
     console.warn('[dsh-workflow] 只读页初始化失败，已忽略：', String(cause))
   })
 
-  // 节点式工作流画布：产品形态本体（游戏/小说/短剧三条产品线共用一套执行语义）。
-  // 独立面板 key + 独立侧栏入口，工作台主体不受影响。
-  try {
-    installWorkflowCanvasPanel(ctx)
-  } catch (cause) {
-    console.warn('[dsh-workflow] 画布面板注册失败，其它面板保持可用：', String(cause))
-  }
+  // 节点式工作流画布不再单独占一个面板：它作为「研发 → 工作流模板」与
+  // 「产品 → 流程」两个视图嵌进工作台自己（app.ts 的 renderFlowShell 系列），
+  // 所以这里没有面板注册，也没有面板顶部那条横幅按钮。
 }

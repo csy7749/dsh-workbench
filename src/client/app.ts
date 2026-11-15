@@ -9,6 +9,7 @@ import { WORKBENCH_CSS } from './styles'
 import { createIdeaView, type IdeaViewHandle } from './idea'
 import { createUiDesignView, type UiDesignViewHandle } from './ui-design'
 import { createDemoView, type DemoViewHandle } from './demo'
+import { mountCanvasInto } from './workflow/canvas-panel'
 import { createAgentPanel } from './agent-panel'
 import { createAgentChat, teamStateOf, type ChatHandle } from './agent-chat'
 import {
@@ -186,7 +187,7 @@ interface DB { spaces: Space[]; tasks: Task[]; focus: FocusSession[]; settings: 
 interface Health { ok: boolean; engine: string; file: string; sqlite?: string; revision: number; tasks: number; spaces: number; focus: number }
 
 interface Ui {
-  view: 'portal' | 'board' | 'list' | 'timeline' | 'matrix' | 'calendar' | 'focus' | 'stats' | 'news' | 'notes' | 'bugs' | 'product' | 'ui' | 'demo' | 'test' | 'idea' | 'assets'
+  view: 'portal' | 'board' | 'list' | 'timeline' | 'matrix' | 'flow' | 'calendar' | 'focus' | 'stats' | 'news' | 'notes' | 'bugs' | 'product' | 'ui' | 'demo' | 'test' | 'idea' | 'assets' | 'wftpl'
   /** 当前项目范围：'all' 全部 / 'none' 未归属 / 其余为 DSH 工作区绝对路径。 */
   project: string
   scope: 'today' | 'all'
@@ -232,7 +233,7 @@ const SIDE_DEFAULT_NARROW = 190
  */
 const PORTAL_GROUPS: Array<{ id: string; title: string; hint: string; views: Array<Ui['view']> }> = [
   { id: 'work', title: '工作', hint: '任务、日程与沉淀', views: ['list', 'board', 'calendar', 'stats', 'focus', 'notes', 'news'] },
-  { id: 'rd', title: '研发', hint: '产品设计、UI 设计、DEMO、缺陷、测试、灵感与资产库', views: ['product', 'ui', 'demo', 'bugs', 'test', 'idea', 'assets'] },
+  { id: 'rd', title: '研发', hint: '产品设计、UI 设计、DEMO、缺陷、测试、灵感、资产库与工作流模板', views: ['product', 'ui', 'demo', 'bugs', 'test', 'idea', 'assets', 'wftpl'] },
 ]
 
 /* ------------------------------- 时间工具 ------------------------------- */
@@ -334,6 +335,7 @@ const PATHS: Record<string, string> = {
   target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1"/>',
   layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/><path d="m3 17 9 5 9-5"/>',
   spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>',
+  flow: '<rect x="3" y="4" width="6" height="5" rx="1.5"/><rect x="15" y="15" width="6" height="5" rx="1.5"/><path d="M6 9v5a2 2 0 0 0 2 2h7"/><path d="M13 14l2 2-2 2"/>',
   link: '<path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/>',
   paperclip: '<path d="m20 11-8.5 8.5a5 5 0 0 1-7-7L13 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 7"/>',
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m21 16-5-5-9 9"/>',
@@ -1077,6 +1079,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
           ${sideItem('测试', { icon: 'test', view: 'test', active: ui.view === 'test' })}
           ${sideItem('灵感', { icon: 'spark', view: 'idea', active: ui.view === 'idea' })}
           ${sideItem('Unity 资产库', { icon: 'layers', view: 'assets', active: ui.view === 'assets' })}
+          ${sideItem('工作流模板', { icon: 'flow', view: 'wftpl', active: ui.view === 'wftpl' })}
         </div>
         ${ui.view === 'portal' ? '' : `<div class="side-sec"><div class="side-head">空间<button class="add" data-act="space-add" title="新建空间">${ic('plus', 13)}</button></div>${spaces}</div>`}
       </div>
@@ -1112,6 +1115,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       { id: 'test', label: '测试', hint: '用例/执行/报告', icon: 'test', view: 'test' },
       { id: 'idea', label: '灵感', hint: '发散成导图 / 力导图', icon: 'spark', view: 'idea' },
       { id: 'assets', label: 'Unity 资产库', hint: '本地已购资产', icon: 'layers', view: 'assets' },
+      { id: 'wftpl', label: '工作流模板', hint: '造流程模板 / 从模板起图', icon: 'flow', view: 'wftpl' },
+      { id: 'flow', label: '流程', hint: '当前产品的节点流程', icon: 'flow', view: 'flow' },
       { id: 'new-task', label: '新建任务', hint: '⌘N', icon: 'plus', action: 'new' },
       { id: 'new-note', label: '新建笔记', hint: '记事本', icon: 'plus', action: 'note-new' },
       { id: 'new-bug', label: '新建 Bug', hint: '质量管理', icon: 'plus', action: 'bug-new' },
@@ -1165,8 +1170,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   /* ---------- 内容 ---------- */
   const FILTER_LABEL: Record<Ui['filter'], string> = { all: '筛选', high: '高优先级', sub: '有子待办', attach: '有附件', unscheduled: '未排时间' }
   const SORT_LABEL: Record<Ui['sort'], string> = { time: '按时间', priority: '按优先级', created: '按创建', title: '按标题' }
-  const MODULE_OF: Record<Ui['view'], string> = { portal: '工作台', board: '任务', list: '任务', timeline: '计划', matrix: '任务', calendar: '计划', focus: '专注', stats: '统计', news: '新闻', notes: '记事本', bugs: 'Bug 管理', product: '产品设计', ui: 'UI 设计', demo: 'DEMO', test: '测试', idea: '研发', assets: '研发' }
-  const NAME_OF: Record<Ui['view'], string> = { portal: '项目门户', board: '看板', list: '行动清单', timeline: '时间轴', matrix: '四象限', calendar: '日历', focus: '当前专注', stats: '数据复盘', news: '新闻检索', notes: '笔记', bugs: '质量管理', product: '产品', test: '测试', idea: '灵感', assets: 'Unity 资产库', ui: 'UI 设计', demo: 'DEMO' }
+  const MODULE_OF: Record<Ui['view'], string> = { portal: '工作台', board: '任务', list: '任务', timeline: '计划', matrix: '任务', calendar: '计划', focus: '专注', stats: '统计', news: '新闻', notes: '记事本', bugs: 'Bug 管理', product: '产品设计', ui: 'UI 设计', demo: 'DEMO', test: '测试', idea: '研发', assets: '研发', flow: '研发', wftpl: '研发' }
+  const NAME_OF: Record<Ui['view'], string> = { portal: '项目门户', board: '看板', list: '行动清单', timeline: '时间轴', matrix: '四象限', flow: '流程', calendar: '日历', focus: '当前专注', stats: '数据复盘', news: '新闻检索', notes: '笔记', bugs: '质量管理', product: '产品', test: '测试', idea: '灵感', assets: 'Unity 资产库', ui: 'UI 设计', demo: 'DEMO', wftpl: '工作流模板' }
 
   function renderContent(): void {
     if (ui.view === 'idea') { syncIdeaView(); return }
@@ -1185,6 +1190,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     else if (ui.view === 'list') html = renderList()
     else if (ui.view === 'timeline') html = renderTimeline()
     else if (ui.view === 'matrix') html = renderMatrix()
+    else if (ui.view === 'flow') html = renderFlowShell()
+    else if (ui.view === 'wftpl') html = renderFlowTemplateShell()
     else if (ui.view === 'calendar') html = renderCalendar()
     else if (ui.view === 'focus') html = renderFocus()
     else if (ui.view === 'news') html = renderNews()
@@ -1195,6 +1202,9 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     else if (ui.view === 'demo') html = renderDemoShell()
     else if (ui.view === 'test') html = renderTests()
     else html = renderStats()
+    /* 流程视图要占满内容区（画布自己有滚动与缩放），进出时切 class。 */
+    $id('wb-app')?.classList.toggle('flow-mode', ui.view === 'flow' || ui.view === 'wftpl')
+    if (ui.view !== 'flow' && ui.view !== 'wftpl') disposeFlowCanvas()
     el.innerHTML = html
     bindContentInputs()
     const projectPicker = $id<HTMLSelectElement>('wb-project')
@@ -1213,6 +1223,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       bindProduct()
       if (productTab === 'map') void mountProductCanvas()
     }
+    if (ui.view === 'flow' && ui.project !== 'all' && ui.project !== 'none') mountFlowCanvas('wb-flow-host', ui.project)
+    if (ui.view === 'wftpl') mountFlowCanvas('wb-flow-template-host', '')
     if (ui.view === 'test') bindTests()
     if (ui.view === 'ui') ensureUiDesignView()
     if (ui.view === 'demo') ensureDemoView()
@@ -1226,6 +1238,55 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   /** DEMO 视图外壳。 */
   function renderDemoShell(): string {
     return `<div id="wb-demo-host" class="ud-host"></div>`
+  }
+
+  /**
+   * 产品 → 流程：节点画布挂在产品作用域里，tab 与四象限同一行。
+   * 图归产品所有，所以这里就是编辑入口，不是只读预览。
+   */
+  function renderFlowShell(): string {
+    const scoped = ui.project !== 'all' && ui.project !== 'none'
+    const name = scoped ? projectLabel(ui.project) : '全部项目'
+    return `<div class="view-head">
+      <div><div class="eyebrow">产品流程</div><h1 class="page-title">流程</h1>
+      <div class="page-sub">${scoped ? esc(name) + ' · ' : ''}这张图归这个产品自己，改它不影响别的产品</div></div></div>` +
+      taskSeg() +
+      (scoped
+        ? '<div id="wb-flow-host" class="wf-host"></div>'
+        : '<div id="wb-flow-host" class="wf-host"><div class="notes-empty">先在上面选一个具体项目：流程是跟项目走的，不属于「全部」。</div></div>')
+  }
+
+  /** 研发 → 工作流模板：在这里造流程，跑通后拿去给别的产品当起点。 */
+  function renderFlowTemplateShell(): string {
+    return `<div class="view-head">
+      <div><div class="eyebrow">研发</div><h1 class="page-title">工作流模板</h1>
+      <div class="page-sub">从模板造一张新图，或把跑通的图存成模板；模板只是起点，复制出去就与产品分离</div></div></div>
+    <div id="wb-flow-template-host" class="wf-host"></div>`
+  }
+
+  let flowCanvasDispose: (() => void) | null = null
+  let flowCanvasHost: HTMLElement | null = null
+
+  /** 视图切换会重建 #wb-generic 的 innerHTML，旧 React root 必须显式卸载，否则重复挂载会报容器已占用。 */
+  function disposeFlowCanvas(): void {
+    if (flowCanvasDispose !== null) { try { flowCanvasDispose() } catch { /* 宿主已移除，忽略 */ } }
+    flowCanvasDispose = null
+    flowCanvasHost = null
+  }
+
+  function mountFlowCanvas(hostId: string, productPath: string): void {
+    const host = $id(hostId)
+    if (host === null) return
+    if (flowCanvasHost === host && host.childElementCount > 0) return
+    disposeFlowCanvas()
+    flowCanvasHost = host
+    try {
+      flowCanvasDispose = mountCanvasInto(host, { productPath })
+    } catch (cause) {
+      flowCanvasDispose = null
+      flowCanvasHost = null
+      host.innerHTML = '<div class="notes-empty">画布加载失败：' + esc(String((cause as { message?: string })?.message ?? cause)) + '</div>'
+    }
   }
 
   /**
@@ -1479,7 +1540,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   }
 
   function taskSeg(): string {
-    const tabs: Array<[Ui['view'], string, string]> = [['list', '行动清单', 'list'], ['timeline', '时间轴', 'clock'], ['board', '看板', 'board'], ['matrix', '四象限', 'grid']]
+    const tabs: Array<[Ui['view'], string, string]> = [['list', '行动清单', 'list'], ['timeline', '时间轴', 'clock'], ['board', '看板', 'board'], ['matrix', '四象限', 'grid'], ['flow', '流程', 'flow']]
     return `<div class="viewbar"><div class="seg">${tabs.map(([v, label, icon]) => `<button data-view="${v}" class="${ui.view === v ? 'active' : ''}">${ic(icon, 13)}${label}</button>`).join('')}</div>
       <div class="mini-seg" style="margin-left:2px"><button data-scope="today" class="${ui.scope === 'today' ? 'active' : ''}">今天</button><button data-scope="all" class="${ui.scope === 'all' ? 'active' : ''}">全部</button></div>
       <div class="filters">
@@ -1540,6 +1601,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       { view: 'demo', title: 'DEMO', desc: '可交互原型 · 版本 · 按页优化', icon: 'play', count: null, tile: '#0ea5e9' },
       { view: 'notes', title: '记事本', desc: '笔记与 PDF 导出', icon: 'notebook', count: scopeNotes, tile: '#c27c0e' },
       { view: 'news', title: '新闻', desc: '定时检索与 AI 摘要', icon: 'news', count: null, tile: '#0f766e' },
+      { view: 'wftpl', title: '工作流模板', desc: '造流程模板 · 复制给产品当起点', icon: 'flow', count: null, tile: '#0f9f6e' },
     ]
     /** 单个功能卡（分组内外共用同一套外观）。 */
     const featureCard = (item: (typeof features)[number]): string => `<button class="portal-feature" style="--tile:${item.tile}" data-act="portal-open" data-view="${item.view}">
