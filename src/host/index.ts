@@ -19,6 +19,7 @@ import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
 import { createIdeaModule, buildIdeaPrompt } from './idea.js'
 import { createAgentModule } from './agent.js'
+import { createWorkflowCanvasModule } from './workflow-canvas.js'
 import { createToolPolicyModule, registerGuardedTool } from './tool-policy.js'
 import { collectFromSources, NEWS_SOURCES } from './news-sources.js'
 import { translateNewsItems } from './translate.js'
@@ -6739,6 +6740,17 @@ export function apply(ctx: any): void {
     console.warn('[dsh-workbench] 智能体团队需要 SQLite，当前为 JSON 兜底存储：团队入口将提示不可用')
   }
 
+  /* 工作流画布：与灵感同库不同表（wf_graphs）。无 SQLite 时禁用——画布必须能存。 */
+  let canvasModule: ReturnType<typeof createWorkflowCanvasModule> | null = null
+  try {
+    if (typeof (store as any).connection === 'function') {
+      canvasModule = createWorkflowCanvasModule({ db: (store as any).connection(), prefix: PREFIX })
+    }
+  } catch (cause) {
+    console.warn('[dsh-workbench] 工作流画布初始化失败（其它功能不受影响）：', String(cause))
+  }
+  if (canvasModule === null) console.warn('[dsh-workbench] 工作流画布需要 SQLite，当前为 JSON 兜底存储：画布面板将提示不可用')
+
   registerNewsTool(ctx, store)
   registerBugTool(ctx, store)
   registerProductTools(ctx, store)
@@ -6763,6 +6775,7 @@ export function apply(ctx: any): void {
         if (ideaModule !== null && (await ideaModule.handle(req, res, path, method, url))) return
         if (agentModule !== null && (await agentModule.handle(req, res, path, method, url))) return
         if (await toolPolicy.handle(req, res, path, method, url)) return
+        if (canvasModule !== null && (await canvasModule.handle(req, res, path, method, url))) return
         if (method === 'GET' && (path === '/state' || path === '/')) {
           send(res, 200, store.readState())
           return
