@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, renameSync, existsSync, unlinkSync, readFileS
 import { dirname, join, resolve, parse as parsePath, sep } from 'node:path'
 import { createJobStore } from './m1-job-store.mjs'
 import { createValidationStore } from './m1-validation-store.mjs'
-import { definitionDigestFor, assertValidationReport } from './m1-validation.mjs'
+import { definitionDigestFor, assertValidationReport, assessValidationReport } from './m1-validation.mjs'
 import { validateDraft } from './m1-draft-validator.mjs'
 import { validateFakeCapability } from './m1-fake-capability.mjs'
 import { validateOutputDeclarations, normalizeOutputSet, fileBytesDigest } from './m1-output-set.mjs'
@@ -16,7 +16,7 @@ const require = createRequire(import.meta.url)
 export const ARTIFACT_TYPES = Object.freeze(['text', 'markdown', 'json', 'file-set', 'report'])
 
 export const RUN_STATES = ['created', 'running', 'waiting_review', 'paused', 'completed', 'failed', 'cancelled']
-export const STEP_STATES = ['pending', 'running', 'waiting_review', 'paused', 'succeeded', 'failed', 'cancelled', 'stale']
+export const STEP_STATES = ['pending', 'running', 'waiting_review', 'paused', 'succeeded', 'failed', 'cancelled', 'stale', 'skipped']
 /** 仍未收敛、会被视为 run 未完成的状态。stale 需要重跑，所以也算未完成。 */
 const OPEN_STEP_STATES = ['pending', 'stale', 'running', 'waiting_review', 'paused']
 const CLAIMABLE_STEP_STATES = ['pending', 'stale', 'paused']
@@ -235,7 +235,7 @@ export function validateInputSchema(schema, input) {
   return true
 }
 
-export function createWorkflowKernel(db, root) {
+export function createWorkflowKernel(db, root, options = {}) {
   if (!db || typeof db.exec !== 'function') throw new WorkflowRequiresSqliteError()
   mkdirSync(join(root, 'objects'), { recursive: true })
   mkdirSync(join(root, 'manifests'), { recursive: true })
@@ -398,8 +398,54 @@ export function createWorkflowKernel(db, root) {
     }
     return stale.length
   }
-  // 当前线性模板只消费最近上游；父版本谱系与实际输入绑定独立。
+  const dependenciesOf = step => one('SELECT run_id FROM workflow_run_definitions WHERE run_id=?', step.run_id) ? definitionFor(step.run_id).steps.find(node => node.nodeId === step.node_id)?.dependencies : undefined
+  const joinsAny = step => definitionFor(step.run_id).steps.find(node => node.nodeId === step.node_id)?.joinPolicy === 'any'
+  const activeConditionalPort = content => {
+    const envelope = parse(content)
+    if (envelope.kind !== 'workflow-check-v1' || typeof envelope.ok !== 'boolean' || typeof envelope.input !== 'string' || !envelope.report || typeof envelope.report !== 'object' || envelope.report.ok !== envelope.ok) throw fail('conditional_output_invalid')
+    return envelope.ok ? 'pass' : 'fail'
+  }
+  const descendantsOf = step => {
+    const definitions = one('SELECT run_id FROM workflow_run_definitions WHERE run_id=?', step.run_id) ? definitionFor(step.run_id).steps : []
+    if (!definitions.some(node => node.dependencies !== undefined)) return all('SELECT * FROM workflow_steps WHERE run_id=? AND rowid > (SELECT rowid FROM workflow_steps WHERE id=?)', step.run_id, step.id)
+    const ids = new Set([step.node_id])
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const node of definitions) if (!ids.has(node.nodeId) && node.dependencies?.some(dep => ids.has(dep.nodeId))) { ids.add(node.nodeId); changed = true }
+    }
+    ids.delete(step.node_id)
+    return all('SELECT * FROM workflow_steps WHERE run_id=? ORDER BY rowid', step.run_id).filter(row => ids.has(row.node_id))
+  }
+  // New definitions bind every connected input. Old definitions retain their linear semantics.
   const captureInputs = (step) => {
+    const dependencies = dependenciesOf(step)
+    if (dependencies !== undefined) {
+      const omissions = []
+      const inputs = dependencies.flatMap(dep => {
+        const sourceStep = one('SELECT * FROM workflow_steps WHERE run_id=? AND node_id=?', step.run_id, dep.nodeId)
+        if (joinsAny(step) && sourceStep?.state === 'skipped' && !sourceStep.stale) {
+          const evidence = one("SELECT seq FROM workflow_events WHERE run_id=? AND type='step.skipped' AND json_extract(payload,'$.stepId')=? ORDER BY seq DESC LIMIT 1", step.run_id, sourceStep.id)
+          if (!evidence) throw fail('conditional_skip_invalid')
+          omissions.push({ ...dep, stepId: sourceStep.id, reason: 'upstream_skipped', eventSeq: evidence.seq })
+          return []
+        }
+        const upstream = one('SELECT s.id AS stepId,a.id AS adoptionId,a.snapshot_id AS snapshotId,p.content_hash AS contentHash FROM workflow_steps s JOIN workflow_adoptions a ON a.id=s.current_adoption_id JOIN workflow_snapshots p ON p.id=a.snapshot_id WHERE s.run_id=? AND s.node_id=? AND s.state=? AND s.stale=0', step.run_id, dep.nodeId, 'succeeded')
+        if (!upstream) throw fail('dependency_not_ready', dep.nodeId)
+        const source = definitionFor(step.run_id).steps.find(node => node.nodeId === dep.nodeId)
+        if (source?.portPayloads === 'check-v1' && dep.fromPort !== activeConditionalPort(readSnapshot(upstream.snapshotId).content)) {
+          if (!joinsAny(step)) throw fail('dependency_inactive', dep.nodeId)
+          omissions.push({ ...upstream, ...dep, reason: 'port_inactive' })
+          return []
+        }
+        return [{ ...upstream, nodeId: dep.nodeId, fromPort: dep.fromPort, toPort: dep.toPort }]
+      })
+      if (joinsAny(step)) {
+        if (!inputs.length) throw fail('dependency_inactive')
+        return { inputs, omissions }
+      }
+      return inputs
+    }
     const upstream = one('SELECT s.id AS stepId,a.id AS adoptionId,a.snapshot_id AS snapshotId,p.content_hash AS contentHash FROM workflow_steps s JOIN workflow_adoptions a ON a.id=s.current_adoption_id JOIN workflow_snapshots p ON p.id=a.snapshot_id WHERE s.run_id=? AND s.rowid < (SELECT rowid FROM workflow_steps WHERE id=?) ORDER BY s.rowid DESC LIMIT 1', step.run_id, step.id)
     return upstream ? [upstream] : []
   }
@@ -409,21 +455,55 @@ export function createWorkflowKernel(db, root) {
       ? one('SELECT * FROM workflow_input_bindings WHERE owner_id=? ORDER BY version DESC LIMIT 1', ownerId)
       : one('SELECT * FROM workflow_input_bindings WHERE owner_id=? AND version=?', ownerId, version)
     if (!binding) throw fail('attempt_input_unbound')
-    const inputs = parse(binding.binding_json)
-    if (binding.integrity_hash !== hash({ ownerId, version: binding.version, inputs })) throw fail('attempt_input_invalid')
+    const stored = parse(binding.binding_json)
+    if (binding.integrity_hash !== hash({ ownerId, version: binding.version, inputs: stored })) throw fail('attempt_input_invalid')
+    const inputs = Array.isArray(stored) ? stored : stored?.inputs
+    const omissions = Array.isArray(stored) ? [] : stored?.omissions
     const owner = one('SELECT step_id FROM workflow_attempts WHERE id=?', ownerId) ?? one('SELECT step_id FROM workflow_human_tasks WHERE id=?', ownerId)
-    if (!owner || !Array.isArray(inputs) || inputs.length > 1) throw fail('attempt_input_invalid')
+    if (!owner || !Array.isArray(inputs)) throw fail('attempt_input_invalid')
+    const target = one('SELECT * FROM workflow_steps WHERE id=?', owner.step_id)
+    const dependencies = target && dependenciesOf(target)
+    if (dependencies === undefined && inputs.length > 1) throw fail('attempt_input_invalid')
+    if (!Array.isArray(omissions) || (omissions.length && !joinsAny(target))) throw fail('attempt_input_invalid')
+    if (dependencies !== undefined) {
+      const matches = (input, dep) => input && dep && input.nodeId === dep.nodeId && input.fromPort === dep.fromPort && input.toPort === dep.toPort
+      const allInputs = [...inputs, ...omissions]
+      if (allInputs.length !== dependencies.length || dependencies.some(dep => allInputs.filter(input => matches(input, dep)).length !== 1)) throw fail('attempt_input_invalid')
+      const activeDependencies = dependencies.filter(dep => !omissions.some(item => matches(item, dep)))
+      if (inputs.some((input, i) => !matches(input, activeDependencies[i]))) throw fail('attempt_input_invalid')
+      if (joinsAny(target) && !inputs.length) throw fail('attempt_input_invalid')
+    }
     for (const input of inputs) {
       const source = one('SELECT a.snapshot_id,p.content_hash FROM workflow_adoptions a JOIN workflow_steps s ON s.id=a.step_id JOIN workflow_snapshots p ON p.id=a.snapshot_id JOIN workflow_steps target ON target.id=? WHERE a.id=? AND s.id=? AND s.run_id=target.run_id AND s.rowid<target.rowid', owner.step_id, input.adoptionId, input.stepId)
       if (!source || source.snapshot_id !== input.snapshotId || source.content_hash !== input.contentHash) throw fail('attempt_input_invalid')
     }
-    return { version: binding.version, inputs }
+    for (const omitted of omissions) {
+      const source = one('SELECT node_id FROM workflow_steps WHERE id=? AND run_id=? AND rowid<(SELECT rowid FROM workflow_steps WHERE id=?)', omitted.stepId, target.run_id, target.id)
+      if (source?.node_id !== omitted.nodeId) throw fail('attempt_input_invalid')
+      if (omitted.reason === 'upstream_skipped') {
+        const evidence = one("SELECT payload FROM workflow_events WHERE run_id=? AND seq=? AND type='step.skipped'", target.run_id, omitted.eventSeq)
+        if (!evidence || parse(evidence.payload).stepId !== omitted.stepId) throw fail('attempt_input_invalid')
+      } else if (omitted.reason === 'port_inactive') {
+        const adoption = one('SELECT snapshot_id FROM workflow_adoptions WHERE id=? AND step_id=?', omitted.adoptionId, omitted.stepId)
+        const definition = definitionFor(target.run_id).steps.find(node => node.nodeId === omitted.nodeId)
+        if (definition?.portPayloads !== 'check-v1' || adoption?.snapshot_id !== omitted.snapshotId) throw fail('attempt_input_invalid')
+        const snapshot = readSnapshot(omitted.snapshotId)
+        if (snapshot.contentHash !== omitted.contentHash || activeConditionalPort(snapshot.content) === omitted.fromPort) throw fail('attempt_input_invalid')
+      } else throw fail('attempt_input_invalid')
+    }
+    return { version: binding.version, inputs, ...(omissions.length ? { omissions } : {}) }
   }
   // 快照父指针一律指向快照 id：同一步再采用指向上一个快照，跨步骤指向最近上游已采用的快照。
   const parentSnapshotFor = (step) => {
     if (step.current_adoption_id) {
       const prior = one('SELECT snapshot_id FROM workflow_adoptions WHERE id=?', step.current_adoption_id)
       if (prior) return prior.snapshot_id
+    }
+    const dependencies = dependenciesOf(step)
+    if (dependencies !== undefined) {
+      const owner = one("SELECT id FROM workflow_attempts WHERE step_id=? AND status='running' ORDER BY attempt_no DESC LIMIT 1", step.id)
+      if (!owner) throw fail('attempt_input_unbound')
+      return inputBindingFor(owner.id).inputs[0]?.snapshotId ?? null
     }
     const upstream = all('SELECT current_adoption_id FROM workflow_steps WHERE run_id=? AND rowid < (SELECT rowid FROM workflow_steps WHERE id=?) ORDER BY rowid DESC', step.run_id, step.id)
     for (const row of upstream) {
@@ -436,12 +516,12 @@ export function createWorkflowKernel(db, root) {
   // 上游被重新采用后，下游已产出的步骤失效，必须重跑；在途 Attempt 一并作废，
   // 否则它仍能凭有效 token 采用上游变更之前的结果，把 stale 清掉（A03 反例）。
   const markDownstreamStale = (step) => {
-    const downstream = all('SELECT * FROM workflow_steps WHERE run_id=? AND rowid > (SELECT rowid FROM workflow_steps WHERE id=?)', step.run_id, step.id)
+    const downstream = descendantsOf(step)
     const marked = []
     const voided = []
     const shelvedTasks = []
     for (const row of downstream) {
-      if (['succeeded', 'waiting_review', 'running', 'paused'].includes(row.state)) {
+      if (['succeeded', 'waiting_review', 'running', 'paused', 'skipped'].includes(row.state)) {
         run("UPDATE workflow_steps SET state='stale', stale=1, revision=revision+1 WHERE id=?", row.id)
         marked.push(row.id)
         const inflight = all("SELECT id FROM workflow_attempts WHERE step_id=? AND status='running'", row.id)
@@ -534,8 +614,15 @@ export function createWorkflowKernel(db, root) {
     const definitions = steps ?? [{ nodeId: human ? 'human.edit-confirm' : 'fake.transform', nodeKind: human ? 'human' : 'automatic' }]
     if (!Array.isArray(definitions) || definitions.length === 0) throw fail('run_steps_required')
     if (new Set(definitions.map(item => item.nodeId)).size !== definitions.length) throw fail('definition_invalid')
+    const graphDefinition = definitions.some(node => node.dependencies !== undefined)
+    const preceding = new Set()
     for (const node of definitions) {
       if (typeof node.nodeId !== 'string' || !node.nodeId || !['automatic', 'human'].includes(node.nodeKind ?? 'automatic')) throw fail('definition_invalid')
+      if (graphDefinition && (!Array.isArray(node.dependencies) || node.dependencies.some(dep => !dep || !preceding.has(dep.nodeId) || typeof dep.fromPort !== 'string' || !dep.fromPort || typeof dep.toPort !== 'string' || !dep.toPort) || new Set(node.dependencies.map(dep => dep.toPort)).size !== node.dependencies.length)) throw fail('definition_invalid', 'invalid_dependencies')
+      if (node.nodeKind === 'human' && node.dependencies?.length > 1) throw fail('human_output_mapping_required')
+      if (node.portPayloads !== undefined && node.portPayloads !== 'check-v1') throw fail('definition_invalid', 'invalid_port_payloads')
+      if (node.joinPolicy !== undefined && (!['any', 'all'].includes(node.joinPolicy) || node.nodeKind === 'human')) throw fail('definition_invalid', 'invalid_join_policy')
+      preceding.add(node.nodeId)
       validateFakeCapability(node)
       if (node.inputMapping !== undefined) {
         if (node.nodeKind !== 'human') throw fail('human_output_mapping_required')
@@ -589,7 +676,7 @@ export function createWorkflowKernel(db, root) {
     reapExpiredLeases(runId)
     // 线性调度：只看链条上最前面尚未完成的一步。前面还在途/等待时不得越过它领取后继步骤，
     // 否则同一 run 会并行派发两个步骤（CTX-06 的无双派发要求）。
-    const step = one(`SELECT * FROM workflow_steps WHERE run_id=? AND state NOT IN ('succeeded','cancelled') ORDER BY rowid LIMIT 1`, runId)
+    const step = one(`SELECT * FROM workflow_steps WHERE run_id=? AND state NOT IN ('succeeded','cancelled','skipped') ORDER BY rowid LIMIT 1`, runId)
     if (!step || !CLAIMABLE_STEP_STATES.includes(step.state)) throw fail('step_not_claimable')
     chargeBudget(runId)
 
@@ -627,6 +714,32 @@ export function createWorkflowKernel(db, root) {
     return { kind: 'automatic', attemptId, token }
   })
 
+  const skipConditionalStep = (runId, nodeId) => transaction(() => {
+    const current = one('SELECT * FROM workflow_runs WHERE id=?', runId)
+    if (!current || !['created', 'running'].includes(current.status)) throw fail('run_not_claimable')
+    const step = one("SELECT * FROM workflow_steps WHERE run_id=? AND state NOT IN ('succeeded','cancelled','skipped') ORDER BY rowid LIMIT 1", runId)
+    if (!step || step.node_id !== nodeId || !CLAIMABLE_STEP_STATES.includes(step.state)) throw fail('step_not_claimable')
+    const dependencies = dependenciesOf(step)
+    if (!dependencies?.length) throw fail('conditional_skip_invalid')
+    const inactive = []
+    for (const dep of dependencies) {
+      const upstream = one('SELECT * FROM workflow_steps WHERE run_id=? AND node_id=?', runId, dep.nodeId)
+      if (upstream?.state === 'skipped') { inactive.push(dep.nodeId + ':' + dep.fromPort); continue }
+      if (upstream?.state !== 'succeeded' || upstream.stale || !upstream.current_adoption_id) throw fail('dependency_not_ready', dep.nodeId)
+      const adoption = one('SELECT snapshot_id FROM workflow_adoptions WHERE id=?', upstream.current_adoption_id)
+      const snapshot = readSnapshot(adoption.snapshot_id)
+      const source = definitionFor(runId).steps.find(item => item.nodeId === dep.nodeId)
+      if (source?.portPayloads === 'check-v1') {
+        if (dep.fromPort !== activeConditionalPort(snapshot.content)) inactive.push(dep.nodeId + ':' + dep.fromPort)
+      }
+    }
+    if (!inactive.length || (joinsAny(step) && inactive.length !== dependencies.length)) throw fail('conditional_skip_invalid')
+    cas("UPDATE workflow_steps SET state='skipped',stale=0,revision=revision+1 WHERE id=? AND revision=?", [step.id, step.revision])
+    event(runId, 'step.skipped', { stepId: step.id, nodeId, inactive })
+    const status = settleRun(runId)
+    return { stepId: step.id, status, inactive }
+  })
+
   // 显式重跑只在暂停且执行/发布已对账后开放；不篡改历史 Attempt。
   const rerunStep = ({ stepId, expectedRunRevision, expectedStepRevision }) => transaction(() => {
     const step = one('SELECT * FROM workflow_steps WHERE id=?', stepId)
@@ -643,8 +756,9 @@ export function createWorkflowKernel(db, root) {
     if (step.state !== 'succeeded' || !step.current_adoption_id) throw fail('step_not_adopted')
     cas('UPDATE workflow_steps SET state=?,stale=1,revision=revision+1 WHERE id=? AND revision=?', ['stale', stepId, expectedStepRevision])
     // 尚未派发的旧发布不应在重跑期间落地；运行中/未知项已在上方拒绝。
-    const supersededOutboxIds = all("SELECT o.id FROM workflow_outbox o JOIN workflow_adoptions a ON a.id=o.adoption_id JOIN workflow_steps s ON s.id=a.step_id WHERE o.status='pending' AND s.run_id=? AND s.rowid >= (SELECT rowid FROM workflow_steps WHERE id=?) ORDER BY o.rowid", step.run_id, stepId).map(item => item.id)
-    run("UPDATE workflow_outbox SET status='superseded',reason='step_rerun',updated_at=? WHERE status='pending' AND adoption_id IN (SELECT a.id FROM workflow_adoptions a JOIN workflow_steps s ON s.id=a.step_id WHERE s.run_id=? AND s.rowid >= (SELECT rowid FROM workflow_steps WHERE id=?))", now(), step.run_id, stepId)
+    const affected = new Set([stepId, ...descendantsOf(step).map(row => row.id)])
+    const supersededOutboxIds = all("SELECT o.id,s.id AS step_id FROM workflow_outbox o JOIN workflow_adoptions a ON a.id=o.adoption_id JOIN workflow_steps s ON s.id=a.step_id WHERE o.status='pending' AND s.run_id=? ORDER BY o.rowid", step.run_id).filter(row => affected.has(row.step_id)).map(item => item.id)
+    for (const id of supersededOutboxIds) run("UPDATE workflow_outbox SET status='superseded',reason='step_rerun',updated_at=? WHERE id=? AND status='pending'", now(), id)
     const downstream = markDownstreamStale(step)
     setRunStatus(step.run_id, 'paused', 'step_rerun')
     event(step.run_id, 'step.rerun_requested', { stepId, downstream, supersededOutboxIds })
@@ -913,6 +1027,7 @@ export function createWorkflowKernel(db, root) {
     const definition = definitionFor(step.run_id)
     const node = definition.steps.find(item => item.nodeId === step.node_id)
     if (!node) throw fail('definition_invalid', 'step_node_missing')
+    if (node.portPayloads === 'check-v1') activeConditionalPort(objectContent)
     if ((step.node_kind ?? node.nodeKind) !== node.nodeKind) throw fail('definition_invalid', 'step_kind_mismatch')
     if (step.node_kind === 'automatic') {
       if (!Array.isArray(node?.requiredChecks)) throw fail('validation_definition_invalid', 'required_checks_required')
@@ -921,8 +1036,8 @@ export function createWorkflowKernel(db, root) {
         ...(candidateSet ? { outputSet: candidateSet, contents: new Map(readOutputSet({ root, set: candidateSet }).files.map(file => [file.relativePath, file.data])) } : { content: objectContent, artifactType: onDisk.artifactType }),
         definition, inputSnapshotIds: binding.inputs.map(input => input.snapshotId), requiredChecks: node.requiredChecks,
         producedBy: 'm1-kernel', producedAt: now(),
-      })
-      const verdict = assertValidationReport(report, { subject: report.subject, definitionDigest: definitionDigestFor(definition), inputSnapshotIds: binding.inputs.map(input => input.snapshotId), requiredChecks: node.requiredChecks })
+      }, options.evaluateChecks)
+      const verdict = assessValidationReport(report, { subject: report.subject, definitionDigest: definitionDigestFor(definition), inputSnapshotIds: binding.inputs.map(input => input.snapshotId), requiredChecks: node.requiredChecks })
       const saved = validationStore.save({ runId: step.run_id, stepId: step.id, attemptId, report })
       event(step.run_id, 'automatic.validation.created', { attemptId, stepId: step.id, reportId: saved.stored.id, status: report.status, requiredChecks: node.requiredChecks })
       if (!verdict.applicable || verdict.status !== 'pass') return { validationFailure: verdict.reasons.join(','), reportId: saved.stored.id, candidate, attemptId, token }
@@ -993,11 +1108,18 @@ export function createWorkflowKernel(db, root) {
     if (binding.inputs.length !== 1) throw fail('human_output_mapping_required')
     const snapshotId = binding.inputs[0].snapshotId
     const sourceRow = one('SELECT artifact_type FROM workflow_snapshots WHERE id=?', snapshotId)
-    const source = structureOnly && sourceRow?.artifact_type === 'file-set'
+    let source = structureOnly && sourceRow?.artifact_type === 'file-set'
       ? (() => { const { row, manifest, content } = verifySnapshot(snapshotId, { allowMissingOutputFiles: true }); return { snapshotId: row.id, artifactType: row.artifact_type, content, outputSet: manifest.outputSet ?? null } })()
       : readSnapshot(snapshotId)
     const step = one('SELECT * FROM workflow_steps WHERE id=?', stepId)
     const node = definitionFor(step.run_id).steps.find(item => item.nodeId === step.node_id)
+    const input = binding.inputs[0]
+    const upstream = definitionFor(step.run_id).steps.find(item => item.nodeId === input.nodeId)
+    if (upstream?.portPayloads === 'check-v1') {
+      const envelope = parse(source.content)
+      if (input.fromPort !== activeConditionalPort(source.content)) throw fail('conditional_output_invalid')
+      source = { ...source, content: input.fromPort === 'pass' ? envelope.input : json(envelope.report), artifactType: input.fromPort === 'pass' ? 'markdown' : 'report' }
+    }
     if (!source.outputSet) {
       if (node.inputMapping !== undefined) throw fail('human_output_mapping_required')
       return source
@@ -1060,7 +1182,7 @@ export function createWorkflowKernel(db, root) {
       ...(collection ? { outputSet: collection.set, contents: collection.contents, fileReadIssues: [...collection.missing, ...collection.corrupt] } : { content, artifactType: kind }),
       definition, inputSnapshotIds: binding.inputs.map(input => input.snapshotId), requiredChecks: node.requiredChecks,
       producedBy, producedAt: now(),
-    })
+    }, options.evaluateChecks)
     const saved = validationStore.save({ runId: step.run_id, stepId: step.id, report })
     event(step.run_id, 'human.validation.created', { taskId, taskRevision: expectedTaskRevision, bindingVersion: binding.version, validationReportId: saved.stored.id, status: report.status })
     return saved.stored
@@ -1318,6 +1440,7 @@ export function createWorkflowKernel(db, root) {
     // 用户继续前须先解决发布阻塞；未对账的未知结果不能靠 resume 越过。
     const blocked = publishItemsFor(runId).find((item) => REQUIRED_PUBLISH_BLOCKED.includes(item.status))
     if (blocked) throw fail('publish_unresolved')
+    if (one("SELECT a.id FROM workflow_attempts a JOIN workflow_steps s ON s.id=a.step_id WHERE s.run_id=? AND a.status='unknown' LIMIT 1", runId)) throw fail('attempt_outcome_unknown')
     const placeholders = CLAIMABLE_STEP_STATES.map(() => '?').join(',')
     const step = one(`SELECT * FROM workflow_steps WHERE run_id=? AND state IN (${placeholders}) ORDER BY rowid LIMIT 1`, runId, ...CLAIMABLE_STEP_STATES)
     // 没有可领取步骤不等于不能继续：在途 Attempt 会自己结束，等待发布收敛也要靠显式继续收尾。
@@ -1480,6 +1603,20 @@ export function createWorkflowKernel(db, root) {
     return { attemptId, reason }
   })
 
+  // Revokes adoption authority without asserting whether the remote operation ran.
+  const abandonAttemptResult = attemptId => transaction(() => {
+    const attempt = one('SELECT * FROM workflow_attempts WHERE id=?', attemptId)
+    if (!attempt || !['running', 'unknown'].includes(attempt.status)) throw fail('attempt_not_abandonable')
+    const step = one('SELECT * FROM workflow_steps WHERE id=?', attempt.step_id)
+    const owner = one('SELECT status FROM workflow_runs WHERE id=?', step.run_id)
+    if (!owner || CLOSED_RUN_STATES.includes(owner.status)) throw fail('run_closed')
+    cas('UPDATE workflow_attempts SET status=?,outcome=? WHERE id=? AND status=?', ['cancelled', 'result_abandoned_remote_outcome_unknown', attemptId, attempt.status])
+    if (step.state === 'running') cas('UPDATE workflow_steps SET state=?,revision=revision+1 WHERE id=? AND revision=?', ['paused', step.id, step.revision])
+    setRunStatus(step.run_id, 'paused', 'session_result_abandoned')
+    event(step.run_id, 'attempt.result_abandoned', { attemptId, remoteOutcome: 'unknown' })
+    return { attemptId, remoteOutcome: 'unknown' }
+  })
+
   // 显式暂停：与 markFailed / markUnknown 造成的暂停区分原因；只能由 resume 解除（A36）。
   const pauseRun = (runId, reason = 'user_paused') => transaction(() => {
     const runRow = one('SELECT * FROM workflow_runs WHERE id=?', runId)
@@ -1638,8 +1775,8 @@ export function createWorkflowKernel(db, root) {
   }
 
   return {
-    db, root, createRun, claim, rerunStep, restoreAdoption, forkRun, compareSnapshots, definitionFor, targetsFor, inputBindingFor, assertBindingVersion, storeCandidate, storeOutputSetCandidate, adopt, saveDraft, validateHumanDraft, readDraftFile, saveDraftFile, confirmHuman,
-    heartbeatAttempt, markUnknown, markFailed, reconcileUnknown, resume, cancelRun, cancelAttempt, pauseRun, appendEvent,
+    db, root, createRun, claim, skipConditionalStep, rerunStep, restoreAdoption, forkRun, compareSnapshots, definitionFor, targetsFor, inputBindingFor, assertBindingVersion, storeCandidate, storeOutputSetCandidate, adopt, saveDraft, validateHumanDraft, readDraftFile, saveDraftFile, confirmHuman,
+    heartbeatAttempt, markUnknown, markFailed, reconcileUnknown, resume, cancelRun, cancelAttempt, abandonAttemptResult, pauseRun, appendEvent,
     claimOutbox, completeOutbox, markOutboxUnknown, retryOutbox, reconcilePublishEffect, settleRun,
     readSnapshot, readSnapshotFiles, exportSnapshot, scanRecoverable, pruneRequests, verifySnapshot,
     humanInputSource, revisionContext, beginRevisionRequest, applyRevisionDraft,
@@ -1648,8 +1785,8 @@ export function createWorkflowKernel(db, root) {
   }
 }
 
-export function openWorkflowKernel(dbPath, root) {
+export function openWorkflowKernel(dbPath, root, options = {}) {
   let DatabaseSync
   try { ({ DatabaseSync } = require('node:sqlite')) } catch { throw new WorkflowRequiresSqliteError() }
-  return createWorkflowKernel(new DatabaseSync(dbPath), root)
+  return createWorkflowKernel(new DatabaseSync(dbPath), root, options)
 }

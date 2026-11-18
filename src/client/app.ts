@@ -969,7 +969,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       app.classList.toggle('collapsed', ui.collapsed)
       app.classList.toggle('compact', ui.compact)
       app.classList.toggle('focus-expand', ui.view === 'focus' && ui.focusExpand)
-      app.classList.toggle('no-detail', ['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets'].includes(ui.view))
+      app.classList.toggle('no-detail', ['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl'].includes(ui.view))
     }
     renderSidebar()
     renderTopbar()
@@ -1204,8 +1204,13 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     else html = renderStats()
     /* 流程视图要占满内容区（画布自己有滚动与缩放），进出时切 class。 */
     $id('wb-app')?.classList.toggle('flow-mode', ui.view === 'flow' || ui.view === 'wftpl')
+    const preserveFlowHost = (ui.view === 'flow' || ui.view === 'wftpl') && flowCanvasHost?.isConnected ? flowCanvasHost : null
     if (ui.view !== 'flow' && ui.view !== 'wftpl') disposeFlowCanvas()
     el.innerHTML = html
+    if (preserveFlowHost) {
+      const replacement = $id(preserveFlowHost.id)
+      if (replacement) replacement.replaceWith(preserveFlowHost)
+    }
     bindContentInputs()
     const projectPicker = $id<HTMLSelectElement>('wb-project')
     projectPicker?.addEventListener('change', () => {
@@ -1223,7 +1228,14 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       bindProduct()
       if (productTab === 'map') void mountProductCanvas()
     }
-    if (ui.view === 'flow' && ui.project !== 'all' && ui.project !== 'none') mountFlowCanvas('wb-flow-host', ui.project)
+    if (ui.view === 'flow' && ui.project !== 'all' && ui.project !== 'none') {
+      const card = projectByPath(ui.project)
+      const candidates = products.filter(product => card?.projectId ? product.projectId === card.projectId : product.workspacePath === ui.project)
+      const selected = candidates.find(product => product.id === productSelected) ?? candidates[0]
+      if (selected) mountFlowCanvas('wb-flow-host', selected.workspacePath || ui.project, selected.id)
+      const select = $id<HTMLSelectElement>('wb-flow-product')
+      select?.addEventListener('change', () => { productSelected = select.value; disposeFlowCanvas(); renderContent() })
+    }
     if (ui.view === 'wftpl') mountFlowCanvas('wb-flow-template-host', '')
     if (ui.view === 'test') bindTests()
     if (ui.view === 'ui') ensureUiDesignView()
@@ -1247,12 +1259,15 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   function renderFlowShell(): string {
     const scoped = ui.project !== 'all' && ui.project !== 'none'
     const name = scoped ? projectLabel(ui.project) : '全部项目'
+    const card = scoped ? projectByPath(ui.project) : undefined
+    const candidates = scoped ? products.filter(product => card?.projectId ? product.projectId === card.projectId : product.workspacePath === ui.project) : []
+    const selected = candidates.find(product => product.id === productSelected) ?? candidates[0]
     return `<div class="view-head">
       <div><div class="eyebrow">产品流程</div><h1 class="page-title">流程</h1>
       <div class="page-sub">${scoped ? esc(name) + ' · ' : ''}这张图归这个产品自己，改它不影响别的产品</div></div></div>` +
       taskSeg() +
       (scoped
-        ? '<div id="wb-flow-host" class="wf-host"></div>'
+        ? (selected ? `<label>产品 <select id="wb-flow-product">${candidates.map(product => `<option value="${esc(product.id)}" ${product.id === selected.id ? 'selected' : ''}>${esc(product.name)}</option>`).join('')}</select></label><div id="wb-flow-host" class="wf-host"></div>` : '<div class="notes-empty">当前项目没有产品，请先在产品页面创建产品。</div>')
         : '<div id="wb-flow-host" class="wf-host"><div class="notes-empty">先在上面选一个具体项目：流程是跟项目走的，不属于「全部」。</div></div>')
   }
 
@@ -1274,14 +1289,14 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     flowCanvasHost = null
   }
 
-  function mountFlowCanvas(hostId: string, productPath: string): void {
+  function mountFlowCanvas(hostId: string, productPath: string, productId = ''): void {
     const host = $id(hostId)
     if (host === null) return
     if (flowCanvasHost === host && host.childElementCount > 0) return
     disposeFlowCanvas()
     flowCanvasHost = host
     try {
-      flowCanvasDispose = mountCanvasInto(host, { productPath })
+      flowCanvasDispose = mountCanvasInto(host, { productPath, productId, createSession: () => createSessionIn(productPath), sendSession: sendToSession })
     } catch (cause) {
       flowCanvasDispose = null
       flowCanvasHost = null
@@ -7952,7 +7967,7 @@ ${lines}`
   function renderDetail(): void {
     const el = detail()
     if (!el) return
-    const show = !['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets'].includes(ui.view)
+    const show = !['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl'].includes(ui.view)
     el.classList.toggle('hide', !show)
     if (!show) { el.innerHTML = ''; return }
     const t = selectedTask()
@@ -9376,6 +9391,7 @@ ${lines}`
 
   return {
     destroy(): void {
+      disposeFlowCanvas()
       try { ideaView?.destroy() } catch (cause) { console.warn('[dsh-workbench] 灵感视图卸载失败', cause) }
       ideaView = null
       if (saveTimer !== 0) window.clearTimeout(saveTimer)

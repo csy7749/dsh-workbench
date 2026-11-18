@@ -18,8 +18,9 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
 import { createIdeaModule, buildIdeaPrompt } from './idea.js'
-import { createAgentModule } from './agent.js'
+import { createAgentModule, readSessionLog } from './agent.js'
 import { createWorkflowCanvasModule } from './workflow-canvas.js'
+import { createWorkflowSessionAdapter } from './workflow-session.mjs'
 import { createToolPolicyModule, registerGuardedTool } from './tool-policy.js'
 import { collectFromSources, NEWS_SOURCES } from './news-sources.js'
 import { translateNewsItems } from './translate.js'
@@ -6744,17 +6745,34 @@ export function apply(ctx: any): void {
   try {
     if (typeof (store as any).connection === 'function') {
       const dataDir = dirname(store.file)
+      const sessionAdapter = createWorkflowSessionAdapter(ctx)
       canvasModule = createWorkflowCanvasModule({
         db: (store as any).connection(),
         prefix: PREFIX,
         runsDbPath: join(dataDir, 'workflow-runs.sqlite'),
         runsRoot: join(dataDir, 'workflow-runs'),
+        products: () => store.listProducts(true),
+        prepareSession: sessionAdapter.prepare,
+        sessionAdapter,
+        sessionEvents: (sessionId: string) => {
+          try {
+            const session = ctx.get?.('agents')?.get?.(sessionId)?.session
+            const events = Array.from(session?.snapshotEvents?.(0) ?? [])
+            if (events.length) return events
+          } catch { /* released agents fall back to durable logs */ }
+          return readSessionLog(dataDir, sessionId)
+        },
       })
     }
   } catch (cause) {
     console.warn('[dsh-workbench] 工作流画布初始化失败（其它功能不受影响）：', String(cause))
   }
   if (canvasModule === null) console.warn('[dsh-workbench] 工作流画布需要 SQLite，当前为 JSON 兜底存储：画布面板将提示不可用')
+  if (canvasModule !== null) {
+    const disposeWorkflowCanvas = (): void => { try { canvasModule?.dispose() } catch (cause) { console.warn('[dsh-workbench] 工作流运行时清理失败：', String(cause)) } }
+    if (typeof ctx.effect === 'function') ctx.effect(() => disposeWorkflowCanvas, 'workbench: workflow execution scheduler')
+    else if (typeof (ctx as any).on === 'function') (ctx as any).on('dispose', disposeWorkflowCanvas)
+  }
 
   registerNewsTool(ctx, store)
   registerBugTool(ctx, store)

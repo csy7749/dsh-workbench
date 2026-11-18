@@ -210,7 +210,7 @@ const normalizeVerifiedSet = (outputSet) => {
  * }} input
  * @returns {object} normalizeValidationReport 的返回值（含 reportDigest）
  */
-export const validateDraft = (input = {}) => {
+export const validateDraft = (input = {}, evaluateChecks = () => []) => {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('validation_input_invalid', 'not_an_object')
   const requiredNames = normalizeRequiredNames(input.requiredChecks)
   // 定义摘要用整份冻结定义：任何一个节点或输入契约变化都要让旧报告失效（01:47）。
@@ -243,6 +243,12 @@ export const validateDraft = (input = {}) => {
       artifactType, contentHash: fileBytesDigest(Buffer.from(input.content, 'utf8')),
     })
     computed = singleFileChecks(input.content, artifactType)
+    computed.push(...evaluateChecks(input.content, requiredNames))
+    if (requiredNames.includes('check.report_pass')) {
+      let report
+      try { report = JSON.parse(input.content) } catch {}
+      computed.push(check('check.report_pass', report?.ok === true ? 'pass' : 'fail', report?.ok === true ? 'checks_passed' : 'checks_failed'))
+    }
   }
 
   // 必需检查名必须都出现在报告里：缺项会被 statusFor 判成 missing，

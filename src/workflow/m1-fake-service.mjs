@@ -1033,6 +1033,7 @@ export function createFakeBusinessService({ kernel, targetAdapter = null, contex
     let binding
     try { binding = kernel.inputBindingFor(attemptId) }
     catch (error) { throw fail('artifact_missing', error.code ?? 'attempt_input_unbound') }
+    if (binding.inputs.length > 1) throw fail('artifact_missing', 'multiple_inputs_unsupported_by_fake_node')
     const frozenInput = binding.inputs[0] ?? null
     const snapshotId = frozenInput?.snapshotId ?? null
     if (!snapshotId) return { attemptId, snapshotId: null, contentHash: null, authorType: null, content: null }

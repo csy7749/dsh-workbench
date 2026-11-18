@@ -104,6 +104,10 @@ check('可选项目录接口', options.status === 200 && Array.isArray(options.b
 const toolNames = ['workbench_memory_search', 'workbench_memory_write', 'workbench_knowledge_search']
 check('记忆/知识工具已注册', toolNames.every(name => tools[name] !== undefined))
 
-rmSync(dir, { recursive: true, force: true })
+try { rmSync(dir, { recursive: true, force: true }) }
+catch (error) {
+  if (!['EPERM', 'EBUSY'].includes(error?.code)) throw error
+  console.log(`临时目录保留（SQLite 句柄仍在使用）：${dir}`)
+}
 console.log(`\n${fail === 0 ? '全部通过' : '存在失败'}：${pass}/${pass + fail}`)
 process.exit(fail === 0 ? 0 : 1)

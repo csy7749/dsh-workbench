@@ -96,7 +96,7 @@ function zstdText(raw: Buffer): string {
  * 从磁盘会话日志读事件（agent 释放后的兜底）。
  * 日志位置：<DSH_HOME>/sessions/<工作区目录>/<sessionId>/session.v4.jsonl.zstd。
  */
-function readSessionLog(_dataDir: string, sessionId: string): any[] {
+export function readSessionLog(_dataDir: string, sessionId: string): any[] {
   try {
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(sessionId)) return []
     const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
