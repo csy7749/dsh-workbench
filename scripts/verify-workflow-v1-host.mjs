@@ -39,7 +39,7 @@ async function call(path, method = 'GET', body, status = 200) {
 try {
   const catalog = await call('/workflow/catalog')
   assert(catalog.defs.some(node => node.id === 'config.combine'))
-  assert.equal(catalog.defs.find(node => node.id === 'game.build').executor, 'unavailable')
+  assert.equal(catalog.defs.find(node => node.id === 'game.build').executor, 'dsh-session')
   const productA = (await call('/products', 'POST', { name: 'Isolated V1 A', workspacePath: root })).product
   const productB = (await call('/products', 'POST', { name: 'Isolated V1 B', workspacePath: root })).product
   await call('/workflow/graphs', 'POST', { productId: root, templateId: 'game-gdd-to-playtest' }, 400)

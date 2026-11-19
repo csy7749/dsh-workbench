@@ -36,6 +36,33 @@ const GAME_TEMPLATE = buildTemplate('game', '游戏 v1 · 玩法规则与导出'
   ['review', 'out', 'export', 'in'],
 ])
 
+const GAME_PRODUCT_TEMPLATE = buildTemplate('game', '游戏产品 · 从需求到可试玩交付', [
+  { id: 'brief', type: 'input.brief', x: 40, y: 200, config: { text: '描述目标玩家、核心体验、参考游戏、目标平台和本次交付范围。首版以一个可完整试玩的浏览器游戏为目标。' } },
+  { id: 'gdd', type: 'game.gdd', x: 300, y: 200, config: { platform: '网页', genre: '参考游戏与目标体验' } },
+  { id: 'rules', type: 'game.rules', x: 560, y: 200 },
+  { id: 'check', type: 'check.rules', x: 820, y: 200 },
+  { id: 'design-review', type: 'human.review', title: '批准玩法范围', x: 1080, y: 200, config: { note: '核对目标、核心循环、控制方式、胜负条件和可观察验收行为。完成批准前不创建游戏工程。' } },
+  { id: 'create', type: 'game.create', x: 1340, y: 200 },
+  { id: 'prototype-playtest', type: 'game.playtest', title: '原型自动试玩', x: 1600, y: 200 },
+  { id: 'revise', type: 'game.revise', x: 1860, y: 200 },
+  { id: 'build', type: 'game.build', x: 2120, y: 200 },
+  { id: 'final-playtest', type: 'game.playtest', title: '最终版本自动试玩', x: 2380, y: 200 },
+  { id: 'package', type: 'game.package', x: 2640, y: 200 },
+  { id: 'handoff-review', type: 'game.handoff-review', x: 2900, y: 200 },
+], [
+  ['brief', 'out', 'gdd', 'req'],
+  ['gdd', 'gdd', 'rules', 'in'],
+  ['rules', 'out', 'check', 'in'],
+  ['check', 'pass', 'design-review', 'in'],
+  ['design-review', 'out', 'create', 'in'],
+  ['create', 'out', 'prototype-playtest', 'in'],
+  ['prototype-playtest', 'out', 'revise', 'in'],
+  ['revise', 'out', 'build', 'in'],
+  ['build', 'out', 'final-playtest', 'in'],
+  ['final-playtest', 'out', 'package', 'in'],
+  ['package', 'out', 'handoff-review', 'in'],
+])
+
 const CANVAS_DELIVERY_TEMPLATE = buildTemplate('game', '工作台 · 画布开发与集中验收', [
   { id: 'brief', type: 'input.brief', title: '目标与实施范围', x: 40, y: 200, config: { text: '完成 D:/AI/dsh-workbench/docs/workflow-v1/07-画布产品化补充计划.md 中的当前剩余工作：完整 DAG 运行、持续执行和恢复、画布完整性，然后集中验收桌面画布、分支汇合、人工审核、真实模型、产品包边界、HTTP 与真实数据。以实际源码与现有工作区状态为准，保留已有改动。工作流节点只生成文档；代码修改、命令和桌面操作由外部执行并回填证据。' } },
   { id: 'plan', type: 'dsh.generate', title: '拆分实施任务', x: 310, y: 200, config: { prompt: '根据输入制定可执行的实施任务清单。覆盖通用多输出契约、节点级执行、运行详情、分组/注释/折叠、服务端草稿与版本迁移，以及真实会话、桌面和数据集中验收。每项写范围、依赖、验收方法和风险；区分现有依据与待核查事项，不假定读过仓库或声称已经完成。保留用户已有改动。' } },
@@ -103,6 +130,7 @@ export interface TemplateInfo { id: string; name: string; line: ProductLineId; s
 
 export const templates: { id: string; line: ProductLineId; summary: string; graph: WorkflowGraph }[] = [
   { id: 'game-gdd-to-playtest', line: 'game', summary: '需求 → 设计稿 → 规则 JSON → 校验 → 人工确认 → 文件导出', graph: GAME_TEMPLATE },
+  { id: 'game-product-closed-loop', line: 'game', summary: '需求 → 玩法批准 → 可玩原型 → 自动试玩修订 → 最终构建与试玩 → 离线 HTML → 人工验收', graph: GAME_PRODUCT_TEMPLATE },
   { id: 'workbench-canvas-delivery', line: 'game', summary: '画布任务拆解 → 人工实施记录 → 集中验收 → 证据回填 → 报告导出；不自动改代码或运行测试', graph: CANVAS_DELIVERY_TEMPLATE },
   { id: 'novel-bible-to-chapter', line: 'novel', summary: '需求 → 设定集 → 人物 + 大纲 → 章节 → 文风校验 → 导出', graph: NOVEL_TEMPLATE },
   { id: 'drama-story-to-deliver', line: 'drama', summary: '需求 → 故事核 → 分镜脚本 → 分镜表 + 配音 → 角色一致 → 交付包', graph: DRAMA_TEMPLATE },

@@ -12,3 +12,17 @@ export function gameReviewSources(compiled, nodeId) {
   const source = type => compiled.filter(item => ancestors.has(item.nodeId) && item.type === type).at(-1)?.nodeId
   return { brief: source('input.brief'), gdd: source('game.gdd'), rules: source('game.rules'), report: source('check.rules') }
 }
+
+export function gameHandoffSources(compiled, nodeId) {
+  const ancestors = new Set()
+  const visit = id => {
+    for (const up of compiled.find(item => item.nodeId === id)?.upstream ?? []) {
+      if (ancestors.has(up)) continue
+      ancestors.add(up)
+      visit(up)
+    }
+  }
+  visit(nodeId)
+  const source = type => compiled.filter(item => ancestors.has(item.nodeId) && item.type === type).at(-1)?.nodeId
+  return { build: source('game.build'), playtest: source('game.playtest'), package: source('game.package') }
+}

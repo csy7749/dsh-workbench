@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync } from 'node:fs'
-import { templateOf } from '../src/shared/workflow-catalog.ts'
+import { templateOf, validateGraph } from '../src/shared/workflow-catalog.ts'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,6 +8,7 @@ import { createSessionRevisions } from '../src/host/workflow-revisions.mjs'
 import { gameReviewSources } from '../src/packs/game/review-sources.mjs'
 import { createWorkflowRunner } from '../src/host/workflow-runner.mjs'
 import { GAME_CHECKS, validateGameRules } from '../src/packs/game/validators.mjs'
+import { gameHandoffReviewContract } from '../src/packs/game/runtime.mjs'
 const branches = [
   {nodeId:'gdd-a',type:'game.gdd',upstream:[]},
   {nodeId:'rules-a',type:'game.rules',upstream:['gdd-a']},
@@ -54,6 +55,39 @@ assert.equal(JSON.parse(runner.content('valid','rules')).title,rules.title)
 assert.deepEqual(runner.compiled('valid')[2].step.requiredChecks,GAME_CHECKS)
 const template = templateOf('game-gdd-to-playtest')
 assert.equal(template.nodes.length, 6)
+const productTemplate = templateOf('game-product-closed-loop')
+assert(productTemplate)
+assert.deepEqual(validateGraph(productTemplate).filter(issue => issue.level === 'error' || issue.code === 'capability_unavailable'), [])
+assert.equal(productTemplate.nodes.length, 12)
+assert.deepEqual(productTemplate.nodes.map(node => node.type), [
+  'input.brief', 'game.gdd', 'game.rules', 'check.rules', 'human.review', 'game.create',
+  'game.playtest', 'game.revise', 'game.build', 'game.playtest', 'game.package', 'game.handoff-review',
+])
+const handoffCompiled = [
+  { nodeId: 'build', type: 'game.build', upstream: ['revise'] },
+  { nodeId: 'test', type: 'game.playtest', upstream: ['build'] },
+  { nodeId: 'package', type: 'game.package', upstream: ['test'] },
+  { nodeId: 'handoff', type: 'game.handoff-review', upstream: ['package'] },
+]
+const handoffData = {
+  build: { project: 'games/sample', title: 'Sample', buildId: '0123456789ab' },
+  test: { project: 'games/sample', buildId: '0123456789ab', finalPhase: 'won', buildCurrent: true, errors: 0, requests: 0, runDir: 'runs/1', screenshots: ['runs/1/final.png'], summary: 'Errors: none\nScreenshots: runs/1/final.png' },
+  package: { project: 'games/sample', buildId: '0123456789ab', exportPath: 'games/sample/dist/game.html', bytes: 100, offline: true },
+}
+const handoffContent = {
+  kind: 'game-handoff-v1', version: 1, status: '通过', buildId: '0123456789ab', tester: 'tester',
+  platform: 'Windows Chrome', playDurationMinutes: '5', observations: '完成一局', knownIssues: '无', evidencePath: 'games/sample/dist/game.html',
+}
+const getHandoffContent = nodeId => JSON.stringify(handoffData[nodeId] ?? handoffContent)
+assert.equal(gameHandoffReviewContract.validate(JSON.stringify(handoffContent), handoffCompiled, 'handoff', getHandoffContent), null)
+handoffData.test.buildId = 'abcdefabcdef'
+assert.match(gameHandoffReviewContract.validate(JSON.stringify(handoffContent), handoffCompiled, 'handoff', getHandoffContent), /构建 ID/)
+handoffData.test.buildId = '0123456789ab'
+handoffData.package.exportPath = 'games/other/dist/game.html'
+assert.match(gameHandoffReviewContract.validate(JSON.stringify(handoffContent), handoffCompiled, 'handoff', getHandoffContent), /同一份 HTML/)
+handoffData.package.exportPath = 'games/sample/dist/game.html'
+handoffData.test.errors = 1
+assert.match(gameHandoffReviewContract.validate(JSON.stringify(handoffContent), handoffCompiled, 'handoff', getHandoffContent), /没有通过完整自动试玩/)
 template.nodes.find(node => node.type === 'input.brief').config.text = '制作左右移动避障游戏'
 runner.start({ graph: template, runId: 'six-step' })
 assert.equal((await runner.advance('six-step')).waiting.nodeId, 'gdd')
