@@ -2,13 +2,15 @@ import { randomUUID } from 'node:crypto'
 
 /** Pin the route through DSH's public session controller before dispatch. */
 export function createWorkflowSessionAdapter(ctx) {
-  const peer = { id: 'workbench-workflow:' + randomUUID(), principal: { kind: 'owner' }, interactions: 'none', dispose: () => Promise.resolve() }
+  const peerController = new AbortController()
+  const peer = { id: 'workbench-workflow:' + randomUUID(), ctx, principal: { kind: 'owner' }, signal: peerController.signal, interactions: 'none', dispose: () => { peerController.abort(); return Promise.resolve() } }
   const invoke = async (method, request = {}) => {
     const gateway = ctx.get?.('typertGateway') ?? ctx.typertGateway
     if (!gateway?.invoke) throw new Error('DSH 会话模型接口不可用')
     return gateway.invoke({ namespace: 'session', method, args: method === 'modelCatalog' ? {} : { request }, peer, signal: AbortSignal.timeout(15000) })
   }
   return {
+    dispose() { return peer.dispose() },
     async create(sessionId, cwd) {
       const agents = ctx.get?.('agents') ?? ctx.agents
       if (!agents?.create || !agents?.get) throw new Error('DSH 会话创建服务不可用')

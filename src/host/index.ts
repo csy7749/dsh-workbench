@@ -6742,10 +6742,12 @@ export function apply(ctx: any): void {
 
   /* 工作流画布：与灵感同库不同表（wf_graphs）。无 SQLite 时禁用——画布必须能存。 */
   let canvasModule: ReturnType<typeof createWorkflowCanvasModule> | null = null
+  let workflowSessionAdapter: ReturnType<typeof createWorkflowSessionAdapter> | null = null
   try {
     if (typeof (store as any).connection === 'function') {
       const dataDir = dirname(store.file)
       const sessionAdapter = createWorkflowSessionAdapter(ctx)
+      workflowSessionAdapter = sessionAdapter
       canvasModule = createWorkflowCanvasModule({
         db: (store as any).connection(),
         prefix: PREFIX,
@@ -6769,7 +6771,7 @@ export function apply(ctx: any): void {
   }
   if (canvasModule === null) console.warn('[dsh-workbench] 工作流画布需要 SQLite，当前为 JSON 兜底存储：画布面板将提示不可用')
   if (canvasModule !== null) {
-    const disposeWorkflowCanvas = (): void => { try { canvasModule?.dispose() } catch (cause) { console.warn('[dsh-workbench] 工作流运行时清理失败：', String(cause)) } }
+    const disposeWorkflowCanvas = (): void => { try { canvasModule?.dispose(); void workflowSessionAdapter?.dispose() } catch (cause) { console.warn('[dsh-workbench] 工作流运行时清理失败：', String(cause)) } }
     if (typeof ctx.effect === 'function') ctx.effect(() => disposeWorkflowCanvas, 'workbench: workflow execution scheduler')
     else if (typeof (ctx as any).on === 'function') (ctx as any).on('dispose', disposeWorkflowCanvas)
   }

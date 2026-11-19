@@ -4,6 +4,8 @@ const calls = []
 let refuse = false
 const catalog = { default: { provider: 'p1', model: 'default' }, groups: [{ id: 'p1', models: [{ id: 'default' }, { id: 'shared' }] }, { id: 'p2', models: [{ id: 'special' }, { id: 'shared' }] }] }
 const adapter = createWorkflowSessionAdapter({ typertGateway: { async invoke(request) {
+  assert.equal(request.peer.signal.aborted, false)
+  assert(request.peer.ctx)
   calls.push(request)
   if (request.method === 'modelCatalog') { assert.deepEqual(request.args, {}); return catalog }
   assert.equal(request.args.request.sessionId, 'test-session')
@@ -18,6 +20,9 @@ await assert.rejects(() => adapter.prepare('test-session', { modelId: 'shared' }
 refuse = true
 await assert.rejects(() => adapter.prepare('test-session', { providerId: 'p1', modelId: 'default' }), /生成已停止/)
 assert(calls.every(call => call.namespace === 'session'))
+const peer = calls[0].peer
+await adapter.dispose()
+assert.equal(peer.signal.aborted, true)
 const agents = new Map()
 const sent = []
 const lifecycle = createWorkflowSessionAdapter({ get(name) {

@@ -328,7 +328,10 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
       kernel.appendEvent(runId, 'auto.dispatch_reconciled', { sessionId, outcome: 'not_sent' })
     },
     disableAuto(runId) { kernel.query("UPDATE wf_auto_runs SET enabled=0,updated_at=? WHERE run_id=?", new Date().toISOString(), runId) },
-    revisions: runId => revisions.list(runId),
+    revisions: runId => {
+      const steps = kernel.query('SELECT id,node_id FROM workflow_steps WHERE run_id=?', runId)
+      return revisions.list(runId).map(revision => ({ ...revision, nodeId: steps.find(step => step.id === revision.baseline?.stepId)?.node_id }))
+    },
     activeRevisions() {
       return kernel.query("SELECT run_id,id,session_id FROM wf_session_revisions WHERE json_extract(payload,'$.status')='producing' ORDER BY rowid")
     },
@@ -352,7 +355,7 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
       return item.executionConfig
     },
     attempts(runId) {
-      return kernel.query('SELECT a.id,a.step_id,a.attempt_no,a.status,a.outcome,a.output_hash,g.session_id,g.evidence_json,g.config_json FROM workflow_attempts a JOIN workflow_steps s ON s.id=a.step_id LEFT JOIN wf_generation_sessions g ON g.attempt_id=a.id WHERE s.run_id=? ORDER BY a.rowid', runId).map(row => ({ ...row, evidence: row.evidence_json ? JSON.parse(row.evidence_json) : null, execution: row.config_json ? JSON.parse(row.config_json) : null, evidence_json: undefined, config_json: undefined }))
+      return kernel.query('SELECT a.id,a.step_id,s.node_id,a.attempt_no,a.status,a.outcome,a.output_hash,g.session_id,g.evidence_json,g.config_json FROM workflow_attempts a JOIN workflow_steps s ON s.id=a.step_id LEFT JOIN wf_generation_sessions g ON g.attempt_id=a.id WHERE s.run_id=? ORDER BY a.rowid', runId).map(row => ({ ...row, evidence: row.evidence_json ? JSON.parse(row.evidence_json) : null, execution: row.config_json ? JSON.parse(row.config_json) : null, evidence_json: undefined, config_json: undefined }))
     },
     events(runId) { return kernel.query('SELECT * FROM workflow_events WHERE run_id=? ORDER BY seq DESC LIMIT 100', runId).reverse() },
     state: stateOf,

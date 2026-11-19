@@ -11,6 +11,7 @@ import { createElement, useCallback, useEffect, useMemo, useRef, useState, type 
 import { createRoot } from 'react-dom/client'
 import { NODE_WIDTH, alignSelection, connectionChoices, duplicateSelection, fitGraph, graphBounds, historyStack, layoutGraph, type ConnectionTarget } from './canvas-editor.ts'
 import { readCanvasDraft, writeCanvasDraft } from './canvas-drafts.ts'
+import { groupRunNodes, type RunStep, type RunRevision, type RunAttempt, type RunSessionSummary } from './run-node-summary.ts'
 import {
   CATEGORIES, PRODUCT_LINES, defById, emptyGraph, lineOf, summarizeIssues,
   TYPE_LABEL, canConnect, planOf, validateGraph,
@@ -52,10 +53,8 @@ interface Catalog {
 
 interface GraphRow { id: string; name: string; line: string; revision: number; updated_at: string; nodes: number; edges: number }
 
-interface RunStep { revision: number; nodeId: string; title: string; type: string; kind: 'human' | 'agent' | 'static'; state: string; stale: boolean; content: string; inputs?: { nodeId: string | null; fromPort: string | null; toPort: string | null; snapshotId: string }[]; omittedInputs?: { nodeId: string; fromPort: string; toPort: string; reason: string; snapshotId: string | null; eventSeq: number | null }[] }
-interface RunRevision { id: string; status: string; note: string; prompt: string; sessionId: string; content?: string; reportId?: string }
 interface RunWaiting { editor?: { kind: string; fields: { key: string; label: string }[]; regenerateLabel: string }; sources?: { nodeId: string; title: string; snapshotId: string; content: string }[]; revisions?: RunRevision[]; kind: string; nodeId: string | null; title: string; taskId: string | null; content: string; bindingVersion?: number; taskRevision?: number }
-interface RunView { auto?: { enabled: number; state: string; session_id?: string | null; reason?: string | null } | null; generation?: { session_id: string } | null; runId: string; revision: number; status: string; pauseReason?: string; attempts?: any[]; validations?: any[]; events?: any[]; steps: RunStep[]; waiting: RunWaiting | null }
+interface RunView { auto?: { enabled: number; state: string; session_id?: string | null; reason?: string | null } | null; generation?: { session_id: string } | null; runId: string; revision: number; status: string; pauseReason?: string; attempts?: RunAttempt[]; revisions?: RunRevision[]; validations?: any[]; events?: any[]; steps: RunStep[]; waiting: RunWaiting | null }
 
 
 const RUN_STATUS: Record<string, string> = {
@@ -128,7 +127,13 @@ const CSS = `
 .wf-line button[data-on="1"]{background:rgba(255,255,255,.14);font-weight:600}
 .wf-main{display:flex;flex:1;min-height:0}
 .wf-lib{width:236px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--dsh-line,rgba(255,255,255,.1));min-height:0}
-.wf-lib-head{padding:8px 10px;font-size:11px;opacity:.6;letter-spacing:.05em;border-bottom:1px solid rgba(255,255,255,.06)}
+.wf-lib[data-collapsed="1"]{width:38px}
+.wf-lib-head{display:flex;align-items:center;gap:6px;padding:7px 8px;font-size:11px;opacity:.75;border-bottom:1px solid rgba(255,255,255,.06);min-height:32px;box-sizing:border-box}
+.wf-lib-head span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wf-lib-toggle{width:22px;height:22px;flex:none;display:grid;place-items:center;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:4px;background:rgba(255,255,255,.04);color:inherit;cursor:pointer;font-size:14px;line-height:1}
+.wf-lib-toggle:hover{background:rgba(255,255,255,.12)}
+.wf-lib[data-collapsed="1"] .wf-lib-head{justify-content:center;padding:5px}
+.wf-lib[data-collapsed="1"] .wf-lib-head span,.wf-lib[data-collapsed="1"] .wf-lib-body{display:none}
 .wf-lib-body{flex:1;overflow:auto;padding:6px 8px 14px}
 .wf-cat{margin:8px 0 3px;font-size:11px;opacity:.62;display:flex;align-items:center;gap:6px}
 .wf-cat i{width:7px;height:7px;border-radius:2px;display:inline-block}
@@ -149,6 +154,15 @@ const CSS = `
   box-shadow:0 6px 18px rgba(0,0,0,.35);user-select:none}
 .wf-node[data-sel="1"]{border-color:#60a5fa;box-shadow:0 0 0 1px rgba(96,165,250,.5),0 8px 22px rgba(0,0,0,.45)}
 .wf-node[data-bad="1"]{border-color:rgba(248,113,113,.75)}
+.wf-node[data-run="running"]{border-color:#60a5fa;box-shadow:0 0 0 2px rgba(96,165,250,.35),0 0 20px rgba(96,165,250,.16)}
+.wf-node[data-run="waiting_review"]{border-color:#fbbf24;box-shadow:0 0 0 2px rgba(251,191,36,.25)}
+.wf-node[data-run="succeeded"]{border-color:rgba(52,211,153,.48)}
+.wf-node[data-run="failed"]{border-color:rgba(248,113,113,.75)}
+.wf-node[data-run="skipped"]{opacity:.58}
+.wf-node-run-output{margin:6px 7px 8px;border:1px solid rgba(52,211,153,.36);border-left:3px solid #34d399;border-radius:5px;background:rgba(16,185,129,.08);overflow:hidden;cursor:pointer}
+.wf-node-run-output:hover{background:rgba(16,185,129,.14);border-color:rgba(52,211,153,.58)}
+.wf-node-run-output-head{display:flex;align-items:center;gap:5px;padding:4px 7px;background:rgba(16,185,129,.12);color:#6ee7b7;font-size:9.5px;font-weight:700;letter-spacing:.02em}
+.wf-node-run-output-body{padding:5px 7px;font-size:10.5px;line-height:1.45;opacity:.88;max-height:62px;overflow:hidden;white-space:pre-wrap;word-break:break-word}
 .wf-node-head{display:flex;align-items:center;gap:6px;height:33px;padding:7px 9px;border-bottom:1px solid rgba(255,255,255,.08);cursor:move;border-radius:8px 8px 0 0}
 .wf-node-head b{font-size:12px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .wf-node-head em{font-style:normal;font-size:10px;opacity:.55}
@@ -183,6 +197,17 @@ const CSS = `
 @media(max-width:850px){.wf-minimap{width:130px;height:88px}.wf-canvas-tools{right:154px;max-width:calc(100% - 178px)}}
 .wf-side{width:288px;flex:none;display:flex;flex-direction:column;border-left:1px solid var(--dsh-line,rgba(255,255,255,.1));min-height:0}
 .wf-side-body{flex:1;overflow:auto;padding:10px 12px 20px}
+.wf-side-node-head{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid rgba(96,165,250,.3);background:rgba(59,130,246,.12);color:#bfdbfe;flex:none}
+.wf-side-node-mark{width:9px;height:9px;border-radius:50%;background:#60a5fa;box-shadow:0 0 0 4px rgba(96,165,250,.14);flex:none}
+.wf-side-node-title{font-size:13px;font-weight:700;color:#dbeafe}
+.wf-side-node-type{margin-left:auto;padding:2px 6px;border:1px solid rgba(147,197,253,.28);border-radius:4px;font-size:9.5px;color:#bfdbfe;opacity:.9}
+.wf-side .wf-sub{padding:0 2px;margin:2px 0 12px;font-size:10.5px;opacity:.58;line-height:1.5}
+.wf-side-artifact{margin:12px 0 16px;border:1px solid rgba(52,211,153,.58);border-radius:7px;background:rgba(6,95,70,.2);overflow:hidden;box-shadow:0 4px 14px rgba(0,0,0,.18)}
+.wf-side-artifact-head{display:flex;align-items:center;gap:8px;padding:9px 10px;border-bottom:1px solid rgba(52,211,153,.32);background:rgba(16,185,129,.19);color:#a7f3d0;font-size:12px;font-weight:700}
+.wf-side-artifact-head span:last-child{margin-left:auto;padding:2px 6px;border-radius:4px;background:rgba(0,0,0,.2);font-size:10px;font-weight:600;white-space:nowrap}
+.wf-side-artifact pre{margin:0;padding:11px;min-height:48px;max-height:46vh;overflow:auto;border:0;background:transparent;color:#ecfdf5;font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.wf-side-section-title{display:flex;align-items:center;gap:7px;margin:18px -12px 10px;padding:10px 12px;border-top:1px solid rgba(255,255,255,.13);border-bottom:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.035);font-size:11px;font-weight:700;color:#e2e8f0}
+.wf-side-section-title::before{content:"";width:3px;height:13px;border-radius:2px;background:#94a3b8}
 .wf-side h4{margin:0 0 8px;font-size:12px;font-weight:600}
 .wf-side .wf-sub{font-size:11px;opacity:.55;margin:-4px 0 10px;line-height:1.5}
 .wf-field{margin:0 0 10px}
@@ -214,26 +239,55 @@ const CSS = `
 .wf-toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);padding:7px 14px;border-radius:6px;font-size:12px;z-index:9;
   background:rgba(30,34,42,.96);border:1px solid rgba(255,255,255,.16);box-shadow:0 8px 24px rgba(0,0,0,.4);max-width:70%}
 .wf-toast[data-kind="err"]{border-color:rgba(248,113,113,.6);color:#fca5a5}
-.wf-run{position:absolute;right:12px;bottom:12px;width:min(520px,72%);max-height:64%;display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:9px;z-index:8;
+.wf-run{position:absolute;right:12px;bottom:12px;width:min(520px,72%);max-height:64%;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-radius:9px;z-index:8;
   background:rgba(26,30,38,.97);border:1px solid rgba(255,255,255,.16);box-shadow:0 12px 32px rgba(0,0,0,.45);font-size:12px}
-.wf-run-head{display:flex;align-items:center;gap:8px;flex:none}
+.wf-run-head{display:flex;align-items:center;gap:8px;flex:none;flex-wrap:wrap}
 .wf-run-head b{font-size:12px;font-weight:600}
 .wf-badge{padding:1px 7px;border-radius:9px;font-size:10.5px;border:1px solid rgba(255,255,255,.22);opacity:.85}
 .wf-badge[data-s="completed"]{border-color:rgba(52,211,153,.7);color:#6ee7b7}
 .wf-badge[data-s="waiting_review"]{border-color:rgba(251,191,36,.7);color:#fcd34d}
 .wf-badge[data-s="failed"]{border-color:rgba(248,113,113,.7);color:#fca5a5}
-.wf-run-steps{overflow:auto;display:flex;flex-direction:column;gap:3px;font-size:11.5px;max-height:170px}
-.wf-run-progress{display:grid!important;grid-template-columns:220px minmax(0,1fr);align-content:start;align-items:start;gap:10px}
-.wf-run-progress>*{grid-column:2;min-width:0}
-.wf-run-progress>.wf-run-head{grid-column:1/-1}
-.wf-run-progress>.wf-run-steps{grid-column:1;grid-row:2/span 20;max-height:none}
-@media(max-width:1000px){.wf-run-progress{grid-template-columns:170px minmax(0,1fr)}}
-.wf-run-step{display:flex;gap:6px;align-items:center;padding:3px 6px;border-radius:5px;background:rgba(255,255,255,.04)}
-.wf-run-step[data-on="1"]{background:rgba(96,165,250,.16);outline:1px solid rgba(96,165,250,.45)}
-.wf-run-step i{width:6px;height:6px;border-radius:50%;background:#64748b;flex:none}
-.wf-run-step[data-st="succeeded"] i{background:#34d399}
-.wf-run-step[data-st="waiting_review"] i{background:#fbbf24}
-.wf-run-step[data-st="running"] i{background:#60a5fa}
+.wf-run-progress{display:flex!important;gap:10px}
+.wf-run>*{flex-shrink:0;min-width:0}
+.wf-run-section{min-width:0;border:1px solid rgba(255,255,255,.12);border-radius:7px;background:rgba(255,255,255,.025);overflow:hidden}
+.wf-run-section-head{display:flex;align-items:center;gap:7px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.1);font-size:11.5px;font-weight:700}
+.wf-run-artifact{padding:7px 8px;border:1px solid rgba(52,211,153,.2);border-left:3px solid rgba(52,211,153,.65);border-radius:4px;background:rgba(16,185,129,.055)}
+.wf-run-artifact-head{display:flex;align-items:center;gap:6px;margin-bottom:4px;color:#a7f3d0;font-size:10.5px;font-weight:700}
+.wf-run-artifact-head span:last-child{margin-left:auto;font-size:9.5px;font-weight:500;opacity:.75}
+.wf-run-artifact pre{margin:0;max-height:72px;overflow:auto;color:inherit;font-size:10.5px;line-height:1.45;white-space:pre-wrap;word-break:break-word;opacity:.8}
+.wf-run-nodes-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 0 8px}
+.wf-run-nodes-head b{flex:1}
+.wf-run-node-card{margin-bottom:9px;border:1px solid var(--dsh-line);border-radius:7px;background:var(--dsh-panel);overflow:hidden}
+.wf-run-node-card[data-st="running"]{border-color:rgba(96,165,250,.65)}
+.wf-run-node-card[data-st="waiting_review"]{border-color:rgba(251,191,36,.6)}
+.wf-run-node-card[data-st="failed"]{border-color:rgba(248,113,113,.65)}
+.wf-run-node-toggle{width:100%;display:flex;align-items:center;gap:8px;padding:10px;border:0;background:rgba(96,165,250,.07);color:inherit;text-align:left;cursor:pointer;font:inherit}
+.wf-run-node-toggle:hover{background:rgba(96,165,250,.13)}
+.wf-run-node-number{color:#93c5fd;font-size:11px;font-weight:700;flex:none}
+.wf-run-node-heading{flex:1;min-width:0}
+.wf-run-node-heading b{display:block;font-size:12px;overflow-wrap:anywhere}
+.wf-run-node-meta{display:block;margin-top:4px;color:#94a3b8;font-size:10.5px}
+.wf-run-node-status{flex:none;font-size:10.5px;color:#cbd5e1}
+.wf-run-node-body{padding:10px;border-top:1px solid var(--dsh-line)}
+.wf-run-node-task{margin:0 0 10px;font-size:11px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;color:#cbd5e1}
+.wf-run-node-body .wf-run-artifact{margin-bottom:10px}
+.wf-run-node-body .wf-run-artifact details{margin-top:7px}
+.wf-run-node-body .wf-run-artifact details>summary{color:#a7f3d0;cursor:pointer;font-size:11px}
+.wf-run-node-body .wf-run-artifact details pre{max-height:340px;padding-top:8px;opacity:1;user-select:text}
+.wf-run-node-sessions{padding-top:9px;border-top:1px solid var(--dsh-line)}
+.wf-run-node-sessions>h4{margin:0 0 7px;font-size:11px;color:#bfdbfe}
+.wf-run-session{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;padding:8px 0;border-top:1px solid rgba(255,255,255,.06)}
+.wf-run-session:first-of-type{border-top:0}
+.wf-run-session-info{flex:1 1 170px;min-width:0}
+.wf-run-session-info b{font-size:11px;color:#e2e8f0}
+.wf-run-session-info p{margin:4px 0 0;font-size:10.5px;color:#94a3b8;line-height:1.5;overflow-wrap:anywhere}
+.wf-run-session-info .wf-run-session-result{color:#a7f3d0}
+.wf-run-node-empty{margin:0;color:#94a3b8;font-size:11px;line-height:1.5}
+.wf-run-minimized{position:absolute;right:12px;bottom:12px;z-index:8;display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:7px;background:rgba(26,30,38,.97);border:1px solid rgba(255,255,255,.18);box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:11.5px}
+.wf-run-minimized[data-s="running"]{border-color:rgba(96,165,250,.7)}
+.wf-run-minimized[data-s="waiting_review"]{border-color:rgba(251,191,36,.7)}
+.wf-run-minimized[data-s="failed"]{border-color:rgba(248,113,113,.7)}
+.wf-run-minimized[data-s="completed"]{border-color:rgba(52,211,153,.65)}
 .wf-run-wait{display:flex;flex-direction:column;gap:6px;flex:none;border-top:1px solid rgba(255,255,255,.1);padding-top:8px}
 .wf-run-wait textarea{min-height:64px;max-height:130px;resize:vertical;font-size:11.5px;line-height:1.5;padding:6px 8px;border-radius:6px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.14);color:inherit}
 .wf-legend{display:flex;gap:10px;flex-wrap:wrap;font-size:10.5px;opacity:.6;padding:6px 12px;border-top:1px solid rgba(255,255,255,.07);flex:none}
@@ -291,6 +345,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
   const [templateDraft, setTemplateDraft] = useState<{ name: string; fields: { nodeId: string; key: string; value: unknown }[]; keep: string[] } | null>(null)
   const [line, setLine] = useState<ProductLineId>(PRODUCT_LINES[0].id)
   const [displayMode, setDisplayMode] = useState<'progress' | 'canvas'>('canvas')
+  const [nodeLibraryCollapsed, setNodeLibraryCollapsed] = useState(false)
   const [selection, setSelection] = useState<string[]>([])
   const [selectedEdge, setSelectedEdge] = useState<number | null>(null)
   const [search, setSearch] = useState('')
@@ -580,7 +635,8 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
     if (event.button !== 0) return
     const target = event.target as HTMLElement
     if (target.closest('[data-node]') !== null) return
-    if (target.closest('path') !== null || target.closest('.wf-canvas-tools, .wf-link-menu') !== null) return
+    if (target.closest('path') !== null || target.closest('.wf-canvas-tools, .wf-link-menu, .wf-start') !== null) return
+    event.preventDefault()
     setLinkChoice(null)
     event.currentTarget.focus()
     if (!event.shiftKey) { setSel(null); setSelection([]) }
@@ -590,6 +646,8 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
   }
 
   const onNodePointerDown = (event: React.PointerEvent<HTMLElement>, node: CanvasNode): void => {
+    if (event.button !== 0) return
+    event.preventDefault()
     event.stopPropagation()
     canvasRef.current?.focus()
     const next = event.shiftKey ? (selection.includes(node.id) ? selection.filter(id => id !== node.id) : [...selection, node.id]) : (selection.includes(node.id) ? selection : [node.id])
@@ -732,6 +790,8 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
   /* 运行：把当前画布交给宿主编译成步骤后逐步推进。生成类节点必须有人提交真实正文，
      所以这里只提供「提交 / 确认 / 导出」三个动作，不做任何自动填充。 */
   const [run, setRun] = useState<RunView | null>(null)
+  const [runDetailsOpen, setRunDetailsOpen] = useState(true)
+  const [expandedRunNodes, setExpandedRunNodes] = useState<Record<string, boolean>>({})
   const [history, setHistory] = useState<any[]>([])
   const [runText, setRunText] = useState('')
   let reviewDocuments: Record<string, string> | null = null
@@ -980,7 +1040,33 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
 
   const runDrawer = (): ReactElement | null => {
     if (run === null) return null
+    if (!runDetailsOpen && displayMode === 'canvas') return h('button', {
+      type: 'button', className: 'wf-run-minimized', 'data-s': run.status,
+      onClick: () => setRunDetailsOpen(true),
+    }, h('span', { className: 'wf-badge', 'data-s': run.status }, RUN_STATUS[run.status] ?? run.status),
+    '运行 · ' + run.steps.filter(step => step.state === 'succeeded').length + '/' + run.steps.length + ' 步',
+    h('b', null, '打开详情'))
     const waiting = run.waiting
+    const nodeGroups = groupRunNodes(run)
+    const renderRunSession = (session: RunSessionSummary): ReactElement => h('div', { key: session.id, className: 'wf-run-session' },
+      h('div', { className: 'wf-run-session-info' },
+        h('b', null, session.purpose + ' · ' + session.status),
+        h('p', null, session.model),
+        session.result ? h('p', { className: 'wf-run-session-result' }, session.result) : null,
+        session.note ? h('p', null, '修订要求：' + session.note) : null,
+        session.reason ? h('p', null, '结果说明：' + session.reason) : null,
+      ),
+      h('button', { type: 'button', className: 'wf-btn', disabled: !props.openSession, title: session.sessionId, onClick: () => props.openSession?.(session.sessionId) }, '打开会话'),
+    )
+    const completedSteps = run.steps.filter(step => step.state === 'succeeded').length
+    const activeSteps = run.steps.filter(step => ['running', 'waiting_review'].includes(step.state)).length
+    const failedSteps = run.steps.filter(step => ['failed', 'paused'].includes(step.state)).length
+    const skippedSteps = run.steps.filter(step => ['skipped', 'cancelled'].includes(step.state)).length
+    const validationCounts = (run.validations ?? []).reduce((counts: Record<string, number>, validation: any) => {
+      const status = String(validation.status ?? 'unknown')
+      counts[status] = (counts[status] ?? 0) + 1
+      return counts
+    }, {})
     return h('div', { className: 'wf-run' + (displayMode === 'progress' ? ' wf-run-progress' : ''), style: displayMode === 'progress' ? { position: 'relative', right: 'auto', bottom: 'auto', width: 'auto', flex: 1, minWidth: 0, maxHeight: 'none', overflow: 'auto' } : {} },
       h('div', { className: 'wf-run-head' },
         h('b', null, '运行 · ' + run.runId.slice(-6)),
@@ -991,18 +1077,65 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
         h('button', { type: 'button', className: 'wf-btn', disabled: runBusy || run.status !== 'completed', onClick: () => { void exportRun() } }, '导出产物'),
         !['completed', 'cancelled', 'failed'].includes(run.status) ? h('button', { type: 'button', className: 'wf-btn', disabled: runBusy, onClick: () => { void controlRun(run.status === 'paused' ? 'resume' : 'pause') } }, run.status === 'paused' ? '恢复' : '暂停') : null,
         !['completed', 'cancelled', 'failed'].includes(run.status) ? h('button', { type: 'button', className: 'wf-btn', disabled: runBusy, onClick: () => { void controlRun('cancel') } }, '取消运行') : null,
-        h('button', { type: 'button', className: 'wf-btn', onClick: () => setRun(null) }, '收起'),
+        displayMode === 'canvas' ? h('button', { type: 'button', className: 'wf-btn', onClick: () => setRunDetailsOpen(false) }, '收起详情') : null,
       ),
-      h('div', { className: 'wf-run-steps' }, run.steps.map(step => h('div', {
-        key: step.nodeId, className: 'wf-run-step',
-        'data-st': step.state, 'data-on': waiting?.nodeId === step.nodeId ? '1' : '0',
-      },
-        run.status === 'paused' && step.state === 'succeeded' ? h('button', { className: 'wf-btn', disabled: runBusy, onClick: () => { void rerunStep(step) } }, '重跑') : null,
-        h('i', null),
-        h('span', { style: { flex: '1', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, step.title),
-        h('span', { style: { opacity: 0.5, fontSize: '10.5px' } }, step.kind === 'human' ? '人工' : step.kind === 'agent' ? '模型' : '程序'),
-        h('span', { style: { opacity: 0.45, fontSize: '10.5px' } }, step.stale ? '已失效 · 待重跑' : step.state === 'succeeded' ? (step.content.length + ' 字') : STEP_STATUS[step.state] ?? step.state),
-      ))),
+      h('section', { className: 'wf-run-overview' },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+          h('b', null, '整体进度'),
+          h('span', { className: 'wf-hint' }, completedSteps + ' / ' + run.steps.length + ' 已完成'),
+          h('span', { className: 'wf-sp' }),
+          h('span', { className: 'wf-hint' }, [activeSteps ? activeSteps + ' 进行中' : '', failedSteps ? failedSteps + ' 失败/暂停' : '', skippedSteps ? skippedSteps + ' 已跳过' : ''].filter(Boolean).join(' · ') || (run.status === 'completed' ? '全部完成' : '等待下一步')),
+        ),
+        h('div', { role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': run.steps.length, 'aria-valuenow': completedSteps, style: { height: '6px', marginTop: '7px', borderRadius: '4px', background: 'rgba(255,255,255,.1)', overflow: 'hidden' } },
+          h('div', { style: { width: (run.steps.length ? Math.round(completedSteps / run.steps.length * 100) : 0) + '%', height: '100%', background: failedSteps ? '#f87171' : '#34d399', transition: 'width .2s ease' } })),
+        h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '7px', fontSize: '10.5px', opacity: 0.72 } },
+          h('span', null, '模型会话 ' + (run.attempts ?? []).filter(attempt => attempt.session_id).length),
+          h('span', null, '校验 ' + (run.validations ?? []).length + (Object.keys(validationCounts).length ? ' · ' + Object.entries(validationCounts).map(([status, count]) => status + ' ' + count).join(' / ') : '')),
+          h('span', null, '事件 ' + (run.events ?? []).length),
+        ),
+      ),
+      h('section', { className: 'wf-run-nodes', 'aria-label': '节点任务、产物与会话' },
+        h('div', { className: 'wf-run-nodes-head' },
+          h('b', null, '节点任务与结果'),
+          h('button', { type: 'button', className: 'wf-btn', onClick: () => setExpandedRunNodes(current => ({ ...current, ...Object.fromEntries(run.steps.map(step => [run.runId + ':' + step.nodeId, true])) })) }, '展开全部'),
+          h('button', { type: 'button', className: 'wf-btn', onClick: () => setExpandedRunNodes(current => ({ ...current, ...Object.fromEntries(run.steps.map(step => [run.runId + ':' + step.nodeId, false])) })) }, '收起全部'),
+        ),
+        ...nodeGroups.nodes.map(({ step, sessions }, index) => {
+          const key = run.runId + ':' + step.nodeId
+          const expanded = expandedRunNodes[key] ?? (waiting?.nodeId === step.nodeId || ['running', 'waiting_review', 'failed'].includes(step.state))
+          return h('article', { key, className: 'wf-run-node-card', 'data-st': step.stale ? 'stale' : step.state },
+            h('button', { type: 'button', className: 'wf-run-node-toggle', 'aria-expanded': expanded, onClick: () => setExpandedRunNodes(current => ({ ...current, [key]: !expanded })) },
+              h('span', { className: 'wf-run-node-number', 'aria-hidden': true }, String(index + 1).padStart(2, '0')),
+              h('span', { className: 'wf-run-node-heading' },
+                h('b', null, step.title),
+                h('span', { className: 'wf-run-node-meta' }, (step.kind === 'agent' ? '模型任务' : step.kind === 'human' ? '人工任务' : '程序任务') + ' · 产物 ' + (step.content ? 1 : 0) + ' 项 · 会话 ' + sessions.length + ' 个'),
+              ),
+              h('span', { className: 'wf-run-node-status' }, step.stale ? '已失效' : STEP_STATUS[step.state] ?? step.state),
+              h('span', { 'aria-hidden': true }, expanded ? '▾' : '▸'),
+            ),
+            expanded ? h('div', { className: 'wf-run-node-body' },
+              step.description ? h('p', { className: 'wf-run-node-task' }, '任务说明：' + step.description) : null,
+              h('section', { className: 'wf-run-artifact', 'aria-label': step.title + '的产物' },
+                h('div', { className: 'wf-run-artifact-head' }, h('span', null, '节点产物'), h('span', null, step.content ? (step.stale ? '历史产物 · 已失效' : '当前采用') + ' · ' + step.content.length + ' 字' : '尚无产物')),
+                step.content ? h('div', null,
+                  h('pre', null, step.content.slice(0, 260) + (step.content.length > 260 ? '…' : '')),
+                  h('details', null, h('summary', null, '查看完整产物'), h('pre', null, step.content)),
+                ) : h('p', { className: 'wf-run-node-empty' }, step.state === 'skipped' ? '此分支已跳过，没有生成产物。' : '此节点尚未产生已采用的产物。'),
+              ),
+              h('section', { className: 'wf-run-node-sessions', 'aria-label': step.title + '的会话' },
+                h('h4', null, '模型会话 · ' + sessions.length),
+                ...sessions.map(renderRunSession),
+                sessions.length === 0 ? h('p', { className: 'wf-run-node-empty' }, step.kind === 'agent' ? '还没有关联的模型会话；手动提交的内容不会创建会话。' : '此节点没有模型会话。') : null,
+              ),
+              run.status === 'paused' && step.state === 'succeeded' ? h('button', { type: 'button', className: 'wf-btn', disabled: runBusy, onClick: () => { void rerunStep(step) } }, '重跑此节点') : null,
+            ) : null,
+          )
+        }),
+        nodeGroups.unassigned.length ? h('section', { className: 'wf-run-section' },
+          h('div', { className: 'wf-run-section-head' }, '尚未确认归属的历史会话'),
+          h('div', { style: { padding: '0 10px' } }, ...nodeGroups.unassigned.map(renderRunSession)),
+        ) : null,
+      ),
       run.pauseReason ? h('div', { className: 'wf-issue', 'data-lv': 'error' }, '停止原因：' + run.pauseReason) : null,
       run.auto?.reason ? h('div', { className: 'wf-issue', 'data-lv': 'error' }, '自动执行：' + run.auto.reason) : null,
       run.auto?.state === 'blocked' && run.auto.session_id && !(run.attempts ?? []).some(attempt => attempt.session_id === run.auto?.session_id) ? h('button', { className: 'wf-btn', disabled: runBusy, onClick: async () => {
@@ -1020,9 +1153,6 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
           if (result.ok) applyRun(result.data); else toast('err', result.error ?? '放弃失败')
         } finally { setRunBusy(false) }
       } }, '放弃本次生成结果并准备重试')),
-      h('details', null, h('summary', null, '产物、尝试与校验历史'),
-        ...run.steps.map(step => h('details', { key: step.nodeId }, h('summary', null, step.title + (step.stale ? ' · 上游已变更' : '')), h('pre', { style: { whiteSpace: 'pre-wrap' } }, step.content))),
-        h('pre', { style: { whiteSpace: 'pre-wrap' } }, JSON.stringify({ attempts: run.attempts, validations: run.validations, events: run.events }, null, 2))),
       waiting === null
         ? (run.status === 'completed'
             ? h('div', { className: 'wf-hint' }, '流程已完成；命中的节点保留产物，未命中的分支已跳过。点「导出产物」写到磁盘。')
@@ -1034,11 +1164,12 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
                 : waiting.kind === 'agent'
                   ? '下一步「' + waiting.title + '」需要生成正文。可使用 DSH 生成，也可手动提交已有内容；通过校验后才会采用。'
                   : '下一步「' + waiting.title + '」是程序节点，点继续即可。'),
-            waiting.kind === 'human' ? h('div', null, (waiting.sources ?? []).map(source => h('details', { key: source.nodeId, open: true }, h('summary', null, source.title + ' · ' + source.snapshotId), h('pre', { style: { whiteSpace: 'pre-wrap', maxHeight: '260px', overflow: 'auto' } }, source.content)))) : null,
+            waiting.kind === 'human' ? h('details', null, h('summary', null, '审核参考资料'), ...(waiting.sources ?? []).map(source => h('div', { key: source.nodeId, className: 'wf-run-artifact', style: { marginTop: '6px' } }, h('div', { className: 'wf-run-artifact-head' }, h('span', null, source.title), h('span', null, source.snapshotId)), h('pre', { style: { maxHeight: '150px' } }, source.content)))) : null,
             waiting.kind === 'human' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', margin: '8px 0' } },
               h('button', { className: 'wf-btn', disabled: runBusy || !props.createSession || !props.sendSession, onClick: () => { void beginRevision() } }, '请求 AI 修订候选'),
               ...(waiting.revisions ?? []).map(revision => h('div', { key: revision.id, style: { borderTop: '1px solid var(--dsh-line)', paddingTop: '6px' } },
                 h('div', null, revision.note + ' · ' + revision.status),
+                revision.sessionId ? h('button', { className: 'wf-btn', disabled: !props.openSession, onClick: () => props.openSession?.(revision.sessionId) }, '打开对应会话') : null,
                 revision.status === 'producing' ? h('button', { className: 'wf-btn', disabled: runBusy, onClick: () => { void collectRevision(revision) } }, '检查候选') : null,
                 revision.status === 'ready' ? h('button', { className: 'wf-btn', disabled: runBusy, onClick: () => { void applyRevision(revision) } }, '应用到草稿') : null,
                 revision.content ? h('pre', { style: { whiteSpace: 'pre-wrap', maxHeight: '160px', overflow: 'auto' } }, revision.content) : null))) : null,
@@ -1167,8 +1298,10 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
     h('div', { className: 'wf-main' },
       displayMode === 'progress' && doc ? h('div', { className: 'wf-lib' }, h('div', { className: 'wf-lib-head' }, '运行历史'), ...history.map(item => h('button', { key: item.run_id, className: 'wf-btn', onClick: async () => { const result = await call<any>('/runs/' + encodeURIComponent(item.run_id)); if (result.ok) applyRun(result.data); else toast('err', result.error ?? '读取运行失败') } }, item.run_id + ' · ' + (RUN_STATUS[item.status] ?? item.status)))) : null,
       displayMode === 'progress' && doc ? (runDrawer() ?? h('div', { className: 'wf-empty' }, '尚无运行。编辑并保存需求后，可以开始运行。')) : null,
-      h('div', { className: 'wf-lib', style: { display: displayMode === 'progress' && doc ? 'none' : undefined } },
-        h('div', { className: 'wf-lib-head' }, (PRODUCT_LINES.find(item => item.id === line)?.name ?? ('未安装产品线：' + line)) + ' · 节点库（拖到画布或点击添加）'),
+      h('div', { className: 'wf-lib', 'data-collapsed': nodeLibraryCollapsed ? '1' : '0', style: { display: displayMode === 'progress' && doc ? 'none' : undefined } },
+        h('div', { className: 'wf-lib-head' },
+          h('span', { title: (PRODUCT_LINES.find(item => item.id === line)?.name ?? ('未安装产品线：' + line)) + ' · 节点库' }, nodeLibraryCollapsed ? '节点库' : (PRODUCT_LINES.find(item => item.id === line)?.name ?? ('未安装产品线：' + line)) + ' · 节点库'),
+          h('button', { type: 'button', className: 'wf-lib-toggle', title: nodeLibraryCollapsed ? '展开节点库' : '收起节点库', 'aria-label': nodeLibraryCollapsed ? '展开节点库' : '收起节点库', onClick: () => setNodeLibraryCollapsed(value => !value) }, nodeLibraryCollapsed ? '›' : '‹')),
         h('div', { className: 'wf-lib-body' },
           h('input', { className: 'wf-search', placeholder: '搜索节点名称或类型', value: search, onChange: (event: React.ChangeEvent<HTMLInputElement>) => setSearch(event.target.value) }),
           CATEGORIES.map(category => {
@@ -1252,19 +1385,21 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
           ),
           graph.nodes.map(node => {
             const def = defById(node.type)
-            if (def === undefined) return h('div', { key: node.id, 'data-node': node.id, className: 'wf-node', 'data-sel': selection.includes(node.id) ? '1' : '0', 'data-bad': '1', style: { left: node.x + 'px', top: node.y + 'px' } },
+            const runStep = run?.steps.find(step => step.nodeId === node.id)
+            if (def === undefined) return h('div', { key: node.id, 'data-node': node.id, className: 'wf-node', 'data-sel': selection.includes(node.id) ? '1' : '0', 'data-bad': '1', 'data-run': runStep?.state, style: { left: node.x + 'px', top: node.y + 'px' } },
               h('div', { className: 'wf-node-head', onPointerDown: (event: React.PointerEvent<HTMLElement>) => onNodePointerDown(event, node) }, h('i', { className: 'wf-dot', style: { background: '#f87171' } }), h('b', null, node.title || node.type), h('em', null, '未安装')),
               h('div', { className: 'wf-hint', style: { padding: '8px 10px' } }, '节点数据和连线已保留；当前无法执行。'))
             return h('div', {
               key: node.id, 'data-node': node.id, className: 'wf-node',
               'data-sel': selection.includes(node.id) ? '1' : '0', 'data-bad': errorNodes.has(node.id) ? '1' : '0',
+              'data-run': runStep?.stale ? 'stale' : runStep?.state,
               'data-link-target': linkTarget?.node === node.id ? (linkTarget.valid ? 'yes' : 'no') : undefined,
               style: { left: node.x + 'px', top: node.y + 'px' },
             },
               h('div', { className: 'wf-node-head', onPointerDown: (event: React.PointerEvent<HTMLElement>) => onNodePointerDown(event, node) },
                 h('i', { className: 'wf-dot', style: { background: CATEGORIES.find(item => item.id === def.cat)?.accent ?? '#94a3b8' } }),
                 h('b', { onDoubleClick: () => { const title = window.prompt('节点名称', node.title || def.title); if (title?.trim()) mutate(current => ({ ...current, nodes: current.nodes.map(item => item.id === node.id ? { ...item, title: title.trim().slice(0, 120) } : item) })) } }, node.title || def.title),
-                h('em', null, run?.steps.find(step => step.nodeId === node.id)?.stale ? '已过期' : STEP_STATUS[run?.steps.find(step => step.nodeId === node.id)?.state ?? ''] ?? (node.disabled ? '已停用' : def.actor === 'agent' ? '模型' : def.actor === 'human' ? '人工' : '程序')),
+                h('em', null, runStep?.stale ? '已过期' : STEP_STATUS[runStep?.state ?? ''] ?? (node.disabled ? '已停用' : def.actor === 'agent' ? '模型' : def.actor === 'human' ? '人工' : '程序')),
               ),
               h('div', { className: 'wf-ports', style: { minHeight: Math.max(def.inputs.length, def.outputs.length) * PORT_GAP + 6 } },
                 def.inputs.map((port, index) => {
@@ -1292,6 +1427,14 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
               ),
               def.config.length ? h('div', { className: 'wf-node-fields', onPointerDown: (event: React.PointerEvent) => event.stopPropagation() },
                 inlineFields(def).map(field => h(Field, { key: field.key, field, value: node.config[field.key] ?? field.value, update: (key: string, value: string | number | boolean) => updateNodeConfig(node.id, key, value) }))) : null,
+              runStep?.content ? h('div', {
+                className: 'wf-node-run-output', title: '点击节点查看完整产物',
+                onPointerDown: (event: React.PointerEvent) => event.stopPropagation(),
+                onClick: () => { setSel(node.id); setSelection([node.id]); setSelectedEdge(null) },
+              },
+                h('div', { className: 'wf-node-run-output-head' }, '▣ 本次产物', h('span', { style: { marginLeft: 'auto', fontWeight: 500, opacity: 0.8 } }, runStep.content.length + ' 字')),
+                h('div', { className: 'wf-node-run-output-body' }, runStep.content.slice(0, 220) + (runStep.content.length > 220 ? '…' : '')),
+              ) : null,
               h('div', { style: { height: 6 } }),
             )
           }),
@@ -1332,6 +1475,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
           h('button', { className: 'wf-btn', onClick: () => { try { mutate(current => layoutGraph(current, node => { const def = defById(node.type); return def ? nodeHeight(def) : 80 })) } catch (error) { toast('err', String((error as Error).message)) } } }, '自动布局'),
           selection.length > 1 ? h('button', { className: 'wf-btn', title: '选中节点左对齐', onClick: () => mutate(current => alignSelection(current, new Set(selection), 'left')) }, '左对齐') : null,
           selection.length > 1 ? h('button', { className: 'wf-btn', title: '选中节点顶对齐', onClick: () => mutate(current => alignSelection(current, new Set(selection), 'top')) }, '顶对齐') : null,
+          run ? h('button', { className: 'wf-btn', 'data-on': runDetailsOpen ? '1' : '0', onClick: () => setRunDetailsOpen(current => !current) }, runDetailsOpen ? '隐藏运行详情' : '运行详情 · ' + (RUN_STATUS[run.status] ?? run.status)) : null,
           h('span', { className: 'wf-hint', style: { alignSelf: 'center' } }, 'Shift 框选 · Ctrl+D 复制'),
           selectedEdge !== null ? h('span', { className: 'wf-hint', style: { alignSelf: 'center' } }, '拖动终点可重接') : null,
           selectedEdge !== null ? h('button', { className: 'wf-btn', onClick: () => { mutate(current => ({ ...current, edges: current.edges.filter((_, i) => i !== selectedEdge) })); setSelectedEdge(null) } }, '删除连线') : null,
@@ -1357,7 +1501,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
         runStep: run?.steps.find(step => step.nodeId === selectedNode?.id) ?? null,
         toggleNode: (id: string) => mutate(current => ({ ...current, nodes: current.nodes.map(item => item.id === id ? { ...item, disabled: !item.disabled } : item) })),
       }),
-      displayMode === 'canvas' ? runDrawer() : null,
+      displayMode === 'canvas' && runDetailsOpen ? runDrawer() : displayMode === 'canvas' && run !== null ? h('button', { type: 'button', className: 'wf-run-minimized', 'data-s': run.status, onClick: () => setRunDetailsOpen(true) }, h('span', { className: 'wf-badge', 'data-s': run.status }, RUN_STATUS[run.status] ?? run.status), '运行 · ' + run.steps.filter(step => step.state === 'succeeded').length + '/' + run.steps.length + ' 步', h('b', null, '打开详情')) : null,
     ),
     msg === null || displayMode !== 'progress' ? null : h('div', { className: 'wf-issue', 'data-lv': msg.kind === 'err' ? 'error' : 'warn' }, msg.text),
     h('div', { className: 'wf-legend' },
@@ -1421,14 +1565,28 @@ export function WorkflowSidePanel(props: SideProps): ReactElement {
   if (props.hidden) return h('div', { style: { display: 'none' } })
   if (node !== null && def !== undefined) {
     return h('div', { className: 'wf-side' },
-      h('div', { className: 'wf-lib-head' }, '节点 · ' + def.title),
+      h('div', { className: 'wf-side-node-head' },
+        h('i', { className: 'wf-side-node-mark' }),
+        h('span', { className: 'wf-side-node-title' }, node.title || def.title),
+        h('span', { className: 'wf-side-node-type' }, def.actor === 'agent' ? '模型节点' : def.actor === 'human' ? '人工节点' : '程序节点'),
+      ),
       h('div', { className: 'wf-side-body' },
         h('div', { className: 'wf-sub' }, def.hint),
+        props.runStep ? h('section', { className: 'wf-side-artifact' },
+          h('div', { className: 'wf-side-artifact-head' },
+            h('span', null, '本次运行产物'),
+            h('span', null, props.runStep.stale ? '已过期' : STEP_STATUS[props.runStep.state] ?? props.runStep.state),
+          ),
+          h('pre', null, props.runStep.content || '此节点尚未产生可采用的内容。'),
+        ) : null,
+        props.runStep ? h('details', { style: { marginBottom: '12px' } }, h('summary', null, '运行输入与分支信息'),
+          h('div', { style: { padding: '5px 0 2px' } },
+            ...(props.runStep.inputs ?? []).map((input, index) => h('div', { key: index, className: 'wf-hint' }, (input.toPort ?? '输入') + ' ← ' + (input.nodeId ?? '上游') + (input.fromPort ? '.' + input.fromPort : '') + ' · ' + input.snapshotId)),
+            ...(props.runStep.omittedInputs ?? []).map((input, index) => h('div', { key: 'omitted-' + index, className: 'wf-hint' }, input.toPort + ' ← ' + input.nodeId + '.' + input.fromPort + ' · ' + (input.reason === 'port_inactive' ? '此出口未命中' : '上游分支已跳过') + (input.snapshotId ? ' · ' + input.snapshotId : ' · 事件 #' + input.eventSeq))),
+            !(props.runStep.inputs?.length || props.runStep.omittedInputs?.length) ? h('div', { className: 'wf-hint' }, '没有额外输入或分支记录') : null,
+          )) : null,
+        h('div', { className: 'wf-side-section-title' }, '节点配置'),
         def.config.map(field => h(Field, { key: field.key, field, value: node.config[field.key] ?? field.value, update: props.update })),
-        props.runStep ? h('details', { open: true }, h('summary', null, '本次运行 · ' + (props.runStep.stale ? '已过期' : STEP_STATUS[props.runStep.state] ?? props.runStep.state)),
-          ...(props.runStep.inputs ?? []).map((input, index) => h('div', { key: index, className: 'wf-hint' }, (input.toPort ?? '输入') + ' ← ' + (input.nodeId ?? '上游') + (input.fromPort ? '.' + input.fromPort : '') + ' · ' + input.snapshotId)),
-          ...(props.runStep.omittedInputs ?? []).map((input, index) => h('div', { key: 'omitted-' + index, className: 'wf-hint' }, input.toPort + ' ← ' + input.nodeId + '.' + input.fromPort + ' · ' + (input.reason === 'port_inactive' ? '此出口未命中' : '上游分支已跳过') + (input.snapshotId ? ' · ' + input.snapshotId : ' · 事件 #' + input.eventSeq))),
-          h('pre', { className: 'wf-plan', style: { maxHeight: 220, overflow: 'auto', marginTop: 8 } }, props.runStep.content || '暂无已采用产物')) : null,
         h('h4', { style: { marginTop: '14px' } }, '端口'),
         h('div', { className: 'wf-hint' },
           '输入：' + (def.inputs.length === 0 ? '无' : def.inputs.map(port => port.label + (port.optional === true ? '(可选)' : '') + ':' + ((catalog?.typeLabel ?? {})[port.type] ?? port.type)).join('、'))),
@@ -1492,6 +1650,7 @@ export interface CanvasScope {
   productId?: string
   createSession?: () => Promise<string>
   sendSession?: (sessionId: string, prompt: string) => Promise<void>
+  openSession?: (sessionId: string) => void
 }
 
 /**

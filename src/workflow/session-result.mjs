@@ -16,8 +16,12 @@ export function readGenerationResult(events, { prompt, afterSeq = 0 }) {
   for (const event of ordered) {
     const data = event.data ?? {}
     if (event.type === 'user/message') {
+      const message = data.message ?? data
+      const source = message?.source ?? data.source
+      // DSH emits these host snapshots as user/message alongside the dispatched prompt.
+      if (['runtime-context', 'skill-catalog', 'time-context'].includes(source?.kind)) continue
       if (started) return { status: 'failed', reason: 'generation_interleaved_turn' }
-      if (sessionText(data.message ?? data) === prompt.trim()) started = true
+      if (sessionText(message) === prompt.trim()) started = true
       continue
     }
     if (!started) continue

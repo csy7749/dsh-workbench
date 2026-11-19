@@ -66,6 +66,8 @@ try {
   let view = (await call('/workflow/runs', 'POST', { graphId: a.row.id }, 201)).view
   const runPath = '/workflow/runs/' + view.runId
   assert.equal(view.waiting.nodeId, 'gdd')
+  assert(view.steps.every(step => typeof step.stepId === 'string' && step.stepId.length > 0))
+  assert.equal(view.steps.find(step => step.nodeId === 'gdd').sourceAttemptId, null)
   view = (await call(runPath + '/auto', 'POST', { enabled: true })).view
   assert.equal(view.auto.enabled, 1)
   await call(runPath + '/submit', 'POST', { content: 'must not race automatic dispatch' }, 400)
@@ -74,6 +76,9 @@ try {
   await call(runPath + '/generation', 'POST', { sessionId: 'no-live-gateway' }, 400)
   assert.equal((await call(runPath)).view.attempts.filter(attempt => attempt.session_id).length, 0)
   view = (await call(runPath + '/submit', 'POST', { content: '# Isolated design\nConcrete design for A' })).view
+  const designStep = view.steps.find(step => step.nodeId === 'gdd')
+  assert(designStep.sourceAttemptId, 'current artifact exposes its exact source attempt')
+  assert(view.attempts.some(attempt => attempt.id === designStep.sourceAttemptId && attempt.node_id === designStep.nodeId))
   const bad = await call(runPath + '/submit', 'POST', { content: '{}' })
   assert.equal(bad.view.status, 'paused')
   assert.equal(bad.adopted.status, 'failed')

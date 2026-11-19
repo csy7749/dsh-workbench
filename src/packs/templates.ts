@@ -4,6 +4,7 @@ interface TemplateNodeSpec {
   type: string
   x: number
   y: number
+  title?: string
   config?: Record<string, ConfigValue>
 }
 
@@ -12,7 +13,7 @@ type TemplateLink = [string, string, string, string]
 function buildTemplate(line: ProductLineId, name: string, nodes: TemplateNodeSpec[], links: TemplateLink[]): WorkflowGraph {
   const graph: WorkflowGraph = { version: 1, name, line, nodes: [], edges: [] }
   for (const spec of nodes) {
-    graph.nodes.push({ id: spec.id, type: spec.type, x: spec.x, y: spec.y, config: spec.config ?? {} })
+    graph.nodes.push({ id: spec.id, type: spec.type, x: spec.x, y: spec.y, ...(spec.title ? { title: spec.title } : {}), config: spec.config ?? {} })
   }
   for (const [fromNode, fromPort, toNode, toPort] of links) {
     graph.edges.push({ from: { node: fromNode, port: fromPort }, to: { node: toNode, port: toPort } })
@@ -33,6 +34,25 @@ const GAME_TEMPLATE = buildTemplate('game', '游戏 v1 · 玩法规则与导出'
   ['rules', 'out', 'check', 'in'],
   ['check', 'pass', 'review', 'in'],
   ['review', 'out', 'export', 'in'],
+])
+
+const CANVAS_DELIVERY_TEMPLATE = buildTemplate('game', '工作台 · 画布开发与集中验收', [
+  { id: 'brief', type: 'input.brief', title: '目标与实施范围', x: 40, y: 200, config: { text: '完成 D:/AI/dsh-workbench/docs/workflow-v1/07-画布产品化补充计划.md 中的当前剩余工作：完整 DAG 运行、持续执行和恢复、画布完整性，然后集中验收桌面画布、分支汇合、人工审核、真实模型、产品包边界、HTTP 与真实数据。以实际源码与现有工作区状态为准，保留已有改动。工作流节点只生成文档；代码修改、命令和桌面操作由外部执行并回填证据。' } },
+  { id: 'plan', type: 'dsh.generate', title: '拆分实施任务', x: 310, y: 200, config: { prompt: '根据输入制定可执行的实施任务清单。覆盖通用多输出契约、节点级执行、运行详情、分组/注释/折叠、服务端草稿与版本迁移，以及真实会话、桌面和数据集中验收。每项写范围、依赖、验收方法和风险；区分现有依据与待核查事项，不假定读过仓库或声称已经完成。保留用户已有改动。' } },
+  { id: 'plan-review', type: 'human.review', title: '确认任务与实施记录', x: 580, y: 200, config: { note: '审阅并修订任务清单。工作流不会修改代码：请在外部完成实施，将变更文件、未完成项及实际验证记录写入此处，再确认继续；未执行的事项标记未评估。' } },
+  { id: 'acceptance', type: 'dsh.generate', title: '整理集中验收清单', x: 850, y: 200, config: { prompt: '基于输入的任务和实施记录，整理逐项验收清单：桌面入口与画布操作、保存恢复及冲突、100 节点体验、DAG 分支汇合和多输出、节点运行详情、暂停取消恢复、人审、真实 DSH 模型和工具边界、产品包边界、HTTP 与真实数据。每项列操作、期望结果、证据及状态；没有实际证据标记未评估。不要声称执行过测试、看过桌面或修改过代码。' } },
+  { id: 'evidence-review', type: 'human.review', title: '回填验收证据', x: 1120, y: 200, config: { note: '在真实环境执行验收并填写结果：命令、退出码、环境、截图或日志路径、失败及复验。无法执行的项目标记未评估；确认仅代表这份记录已审阅，不等于全部通过。' } },
+  { id: 'report', type: 'dsh.generate', title: '生成验收结论', x: 1390, y: 200, config: { prompt: '根据人工填写的验收记录生成结论：已通过、失败、未评估、剩余问题和后续动作，逐项引用输入中的证据。不得把缺失证据视为通过，不得虚构命令、截图、模型或运行结果；若存在失败或未评估，明确不能宣称完整验收通过。' } },
+  { id: 'final-review', type: 'human.review', title: '审阅验收结论', x: 1660, y: 200, config: { note: '核对结论与实际证据，必要时修正；确认只保存人工审阅后的报告。' } },
+  { id: 'export', type: 'output.publish', title: '导出任务与验收记录', x: 1930, y: 200, config: { target: '文件导出' } },
+], [
+  ['brief', 'out', 'plan', 'in'],
+  ['plan', 'out', 'plan-review', 'in'],
+  ['plan-review', 'out', 'acceptance', 'in'],
+  ['acceptance', 'out', 'evidence-review', 'in'],
+  ['evidence-review', 'out', 'report', 'in'],
+  ['report', 'out', 'final-review', 'in'],
+  ['final-review', 'out', 'export', 'in'],
 ])
 
 const NOVEL_TEMPLATE = buildTemplate('novel', '小说 · 从设定到章节', [
@@ -83,6 +103,7 @@ export interface TemplateInfo { id: string; name: string; line: ProductLineId; s
 
 export const templates: { id: string; line: ProductLineId; summary: string; graph: WorkflowGraph }[] = [
   { id: 'game-gdd-to-playtest', line: 'game', summary: '需求 → 设计稿 → 规则 JSON → 校验 → 人工确认 → 文件导出', graph: GAME_TEMPLATE },
+  { id: 'workbench-canvas-delivery', line: 'game', summary: '画布任务拆解 → 人工实施记录 → 集中验收 → 证据回填 → 报告导出；不自动改代码或运行测试', graph: CANVAS_DELIVERY_TEMPLATE },
   { id: 'novel-bible-to-chapter', line: 'novel', summary: '需求 → 设定集 → 人物 + 大纲 → 章节 → 文风校验 → 导出', graph: NOVEL_TEMPLATE },
   { id: 'drama-story-to-deliver', line: 'drama', summary: '需求 → 故事核 → 分镜脚本 → 分镜表 + 配音 → 角色一致 → 交付包', graph: DRAMA_TEMPLATE },
 ]

@@ -118,6 +118,7 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
     const compiled = runs.compiled(runId)
     const state = runs.state(runId)
     const byNode = new Map(compiled.map(item => [item.nodeId, item]))
+    const artifactSources = new Map(runs.kernel.query('SELECT s.id,p.source_attempt_id FROM workflow_steps s JOIN workflow_adoptions a ON a.id=s.current_adoption_id JOIN workflow_snapshots p ON p.id=a.snapshot_id WHERE s.run_id=?', runId).map((row: any) => [row.id, row.source_attempt_id]))
     const steps = state.steps.map((row: any) => {
       const item = byNode.get(row.node_id)
       const owner = runs.kernel.one('SELECT id FROM workflow_attempts WHERE step_id=? ORDER BY attempt_no DESC LIMIT 1', row.id) ?? runs.kernel.one('SELECT id FROM workflow_human_tasks WHERE step_id=? ORDER BY task_revision DESC LIMIT 1', row.id)
@@ -136,11 +137,14 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
         try { displayContent = JSON.stringify(JSON.parse(content).report, null, 2) } catch { /* preserve readable raw data */ }
       }
       return {
+        stepId: row.id,
+        sourceAttemptId: artifactSources.get(row.id) ?? null,
         nodeId: row.node_id,
         revision: row.revision,
         title: item?.title ?? row.node_id,
         type: item?.type ?? '',
         kind: item?.kind ?? 'static',
+        description: item?.contract?.prompt ?? '',
         state: row.state,
         stale: row.stale === 1,
         content: displayContent,
@@ -159,7 +163,7 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
     } else if (open !== null && (state.run.status === 'created' || state.run.status === 'running')) {
       waiting = { kind: open.kind, nodeId: open.nodeId, title: open.title, taskId: null, content: open.content }
     }
-    return { runId, status: state.run.status, revision: state.run.revision, pauseReason: state.run.pause_reason, steps, waiting, auto: runs.autoState(runId), generation: runs.generation(runId), attempts: runs.attempts(runId), validations: runs.kernel.listValidations(runId), events: runs.events(runId) }
+    return { runId, status: state.run.status, revision: state.run.revision, pauseReason: state.run.pause_reason, steps, waiting, auto: runs.autoState(runId), generation: runs.generation(runId), attempts: runs.attempts(runId), revisions: runs.revisions(runId), validations: runs.kernel.listValidations(runId), events: runs.events(runId) }
   }
 
   const runnerStart = (runId: string, graph: any, productId: string): any => runs!.start({ graph, runId, productId: productId || 'workbench' })

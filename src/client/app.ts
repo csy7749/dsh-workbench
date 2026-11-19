@@ -1296,7 +1296,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     disposeFlowCanvas()
     flowCanvasHost = host
     try {
-      flowCanvasDispose = mountCanvasInto(host, { productPath, productId, createSession: () => createSessionIn(productPath), sendSession: sendToSession })
+      flowCanvasDispose = mountCanvasInto(host, { productPath, productId, createSession: () => createSessionIn(productPath), sendSession: sendToSession, openSession: focusSession })
     } catch (cause) {
       flowCanvasDispose = null
       flowCanvasHost = null
