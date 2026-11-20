@@ -85,7 +85,7 @@ function mountSidebarEntry(ctx: ClientContext): SidebarController {
   ensureCss()
   const previous = (window as unknown as Record<string, SidebarController | undefined>)[SIDEBAR_HANDLE]
   previous?.dispose()
-  document.querySelectorAll(`[${ENTRY_ATTR}]`).forEach(node => node.remove())
+  document.querySelectorAll(`[${ENTRY_ATTR}], [data-dsh-workflow-entry]`).forEach(node => node.remove())
 
   let entry: HTMLButtonElement | null = null
   let disposed = false
@@ -195,7 +195,6 @@ export function apply(ctx: ClientContext): void {
     console.warn('[dsh-workflow] 只读页初始化失败，已忽略：', String(cause))
   })
 
-  // 节点式工作流画布不再单独占一个面板：它作为「研发 → 工作流模板」与
-  // 「产品 → 流程」两个视图嵌进工作台自己（app.ts 的 renderFlowShell 系列），
-  // 所以这里没有面板注册，也没有面板顶部那条横幅按钮。
+  // 工作流入口与运行摘要位于工作台内部，共用工作台容器与会话适配器。
+  // 产品流程与模板仍保留各自的编辑入口。
 }

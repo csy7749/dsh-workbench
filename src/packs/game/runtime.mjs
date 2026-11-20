@@ -1,5 +1,5 @@
 import { GAME_CHECKS, validateGameRules } from './validators.mjs'
-import { REVIEW_CHECK, validateGameReview, validateGameHandoff, parseGameHandoff, validateGameProjectEvidence, validateGamePlaytestEvidence, validateGamePackageEvidence, validateGameRevisionEvidence } from './review.mjs'
+import { REVIEW_CHECK, validateGameReview, validateGameHandoff, parseGameHandoff, gameHandoffError, validateGameProjectEvidence, validateGamePlaytestEvidence, validateGamePackageEvidence, validateGameRevisionEvidence } from './review.mjs'
 import { parseGameReview } from './review.mjs'
 import { gameReviewSources, gameHandoffSources } from './review-sources.mjs'
 export { gameHandoffSources }
@@ -34,12 +34,11 @@ export const gameHandoffReviewContract = {
     { key: 'buildId', label: '实际打开的构建 ID（12 位构建 ID）' },
     { key: 'tester', label: '试玩者' },
     { key: 'platform', label: '设备与浏览器' },
-    { key: 'playDurationMinutes', label: '实际试玩分钟数' },
+    { key: 'playDurationMinutes', label: '实际试玩分钟数（例如 1 或 0.5）' },
     { key: 'observations', label: '从打开到完成一轮的实际过程与观察' },
     { key: 'knownIssues', label: '已知问题（无则填写“无”）' },
-    { key: 'evidencePath', label: '实际试玩的导出 HTML 完整路径' },
+    { key: 'evidencePath', label: '导出 HTML 路径（保留预填的项目相对路径）' },
   ],
-  dependentSource: 'package', regenerateLabel: '重新导出游戏后再试玩',
   parse: parseGameHandoff,
   sources: gameHandoffSources,
   validateSources: nodes => {
@@ -47,13 +46,19 @@ export const gameHandoffReviewContract = {
       throw new Error('handoff_sources_missing: 人工验收需要最终构建、自动试玩和离线导出作为上游。')
     }
   },
-  initialize: () => JSON.stringify({
-    kind: 'game-handoff-v1', version: 1, status: '未通过', buildId: '', tester: '', platform: '',
-    playDurationMinutes: '', observations: '', knownIssues: '', evidencePath: '',
-  }, null, 2),
+  initialize: (compiled, nodeId, contentOf) => {
+    const sources = gameHandoffSources(compiled, nodeId)
+    let built, packaged
+    try { built = JSON.parse(contentOf(sources.build)); packaged = JSON.parse(contentOf(sources.package)) } catch {}
+    return JSON.stringify({
+      kind: 'game-handoff-v1', version: 1, status: '未通过', buildId: built?.buildId ?? '', tester: '', platform: '',
+      playDurationMinutes: '', observations: '', knownIssues: '', evidencePath: packaged?.exportPath ?? '',
+    }, null, 2)
+  },
   validate: (content, compiled, nodeId, contentOf) => {
     const value = parseGameHandoff(content)
-    if (!validateGameHandoff(content)) return '请完成全部人工试玩字段，并把 status 填为“通过”。'
+    const formError = gameHandoffError(value)
+    if (formError) return formError
     const sources = gameHandoffSources(compiled, nodeId)
     if (!sources.build || !sources.playtest || !sources.package) return '最终构建、自动试玩或离线导出证据缺失。'
     let tested, packaged
@@ -66,8 +71,9 @@ export const gameHandoffReviewContract = {
     if (!validateGameProjectEvidence(JSON.stringify(built))) return '最终构建证据格式无效。'
     if (!validateGamePlaytestEvidence(JSON.stringify(tested))) return '最终构建没有通过完整自动试玩、错误/网络检查或未保存截图；请先修复并重新试玩。'
     if (!validateGamePackageEvidence(JSON.stringify(packaged))) return '离线 HTML 导出证据格式无效。'
-    if (tested.project !== built.project || packaged.project !== built.project || !built.buildId || tested.buildId !== built.buildId || packaged.buildId !== built.buildId || value.buildId !== built.buildId) return '人工试玩的项目和构建 ID 必须与最终构建、自动试玩和导出版本一致。'
-    if (value.evidencePath !== packaged.exportPath) return '人工试玩必须针对本次导出的同一份 HTML 文件，并填写完全一致的路径。'
+    if (tested.project !== built.project || packaged.project !== built.project || tested.buildId !== built.buildId || packaged.buildId !== built.buildId) return '最终构建、自动试玩与导出的项目或构建 ID 不一致。'
+    if (value.buildId !== built.buildId) return `请使用本次实际试玩的构建 ID ${built.buildId}。`
+    if (value.evidencePath.trim() !== packaged.exportPath) return `人工试玩必须针对本次导出的同一份 HTML。请将「导出 HTML 路径」恢复为 ${packaged.exportPath}。`
     return null
   },
 }

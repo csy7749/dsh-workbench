@@ -14,6 +14,7 @@ export interface RunStep {
   state: string
   stale: boolean
   content: string
+  artifactFormat?: 'markdown' | 'json' | 'text'
   inputs?: { nodeId: string | null; fromPort: string | null; toPort: string | null; snapshotId: string }[]
   omittedInputs?: { nodeId: string; fromPort: string; toPort: string; reason: string; snapshotId: string | null; eventSeq: number | null }[]
 }

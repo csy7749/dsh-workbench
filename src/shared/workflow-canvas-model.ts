@@ -46,6 +46,8 @@ export interface NodeDef {
   requiredChecks?: string[]
   artifactKind?: string
   prompt?: string
+  /** Product-pack execution guidance, frozen into a run; never read from node configuration. */
+  executionPrompt?: string
   reviewKind?: string
   exportName?: string
 }

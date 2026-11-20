@@ -31,8 +31,17 @@
     "bundle:host": "tsdown -c src/host/tsdown.config.ts",
     "bundle:client": "tsdown -c src/client/tsdown.config.ts",
     "sync:smoke": "node scripts/sync-smoke.mjs",
-    "verify": "node scripts/verify-bundle.mjs && node scripts/verify-news-pipeline.mjs && node scripts/verify-asset-service.mjs && node scripts/verify-tool-policy.mjs && node scripts/verify-workflow-run.mjs",
-    "verify:workflow": "node scripts/verify-workflow-run.mjs"
+    "verify": "node scripts/verify-bundle.mjs && node scripts/verify-news-pipeline.mjs && node scripts/verify-asset-service.mjs && node scripts/verify-tool-policy.mjs && node scripts/verify-workflow-run.mjs && node scripts/verify-native-game-studio.mjs && node scripts/verify-native-game-http.mjs && node scripts/verify-native-game-runner.mjs && node scripts/verify-native-game-adapter.mjs",
+    "verify:game-studio": "node scripts/verify-native-game-studio.mjs && node scripts/verify-native-game-http.mjs && node scripts/verify-native-game-runner.mjs && node scripts/verify-native-game-adapter.mjs",
+    "verify:game-studio:browser": "node scripts/verify-native-game-browser.mjs",
+    "verify:game-studio:playtest": "node scripts/verify-native-game-playtest.mjs",
+    "verify:game-studio:workflow": "node scripts/verify-native-game-workflow.mjs",
+    "verify:game-studio:extensions": "node scripts/verify-native-game-history.mjs && node scripts/verify-native-game-assets.mjs && node scripts/verify-native-game-blender.mjs && node scripts/verify-native-game-revisions.mjs && node scripts/verify-native-game-management.mjs && node scripts/verify-native-game-panel.mjs && node scripts/verify-native-game-tool-cancellation.mjs",
+    "verify:game-studio:creative": "node scripts/verify-native-game-workflow.mjs --creative",
+    "verify:game-studio:creative-browser": "node scripts/verify-native-game-creative-browser.mjs",
+    "verify:game-studio:revisions": "node scripts/verify-native-game-revisions.mjs --browser",
+    "verify:workflow": "node scripts/verify-workflow-run.mjs",
+    "verify:workflow:hub": "node scripts/verify-workflow-run-hub.mjs && node scripts/verify-workflow-v1-host.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

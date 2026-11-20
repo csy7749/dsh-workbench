@@ -1,5 +1,7 @@
 import type { NodeDef } from '../../shared/workflow-canvas-model.js'
 
+const GAME_EXECUTION_PROMPT = 'Host-owned native game operation. Bind the product, run, attempt and verified source receipts; never accept model text as build or playtest evidence.'
+
 export const nodes: NodeDef[] = [
   {
     id: 'game.rules', title: '玩法规则', cat: 'design', actor: 'agent', lines: ['game'],
@@ -70,48 +72,56 @@ export const nodes: NodeDef[] = [
     ],
   },
   {
-    id: 'game.playtest', title: '游戏自动试玩', cat: 'check', actor: 'agent', lines: ['game'], executor: 'dsh-session', capability: 'game-studio', artifactKind: 'json',
+    id: 'game.playtest', title: '游戏自动试玩', cat: 'check', actor: 'auto', lines: ['game'], executor: 'tool-service', capability: 'game-studio', artifactKind: 'json',
+    executionPrompt: GAME_EXECUTION_PROMPT,
     requiredChecks: ['game.playtest.evidence'],
-    prompt: '必须使用 DSH 游戏工坊的 game_studio_playtest 实际运行输入中的游戏，不能只读源码推测。传入项目路径并使用适合当前关卡的时长。工具返回包含 summary、finalPhase、errors、runDir 和 images；从 summary 原样提取 Screenshots 路径、Errors 和 Network requests 信息，并将输入中的当前 buildId 原样带入。只输出规范化 JSON：{"project":"工具返回的项目路径","buildId":"输入里的当前构建 ID","finalPhase":"工具返回的终局状态","buildCurrent":true,"errors":0,"requests":0,"bestScore":0,"runDir":"工具返回的试玩报告目录","screenshots":["summary 中列出的截图路径"],"summary":"工具返回的 summary","unassessed":["未覆盖项"]}。只有 summary 明确没有错误、没有网络请求且构建是当前版本时才填写 buildCurrent=true、errors=0、requests=0；数值和状态必须来自工具响应。工具失败、报告无效或未到达 won 时填写失败状态，不得编造字段或把自动试玩写成人工试玩。',
+    prompt: "由工作台在本机真实浏览器中试玩明确 buildId，记录输入、终局、错误、网络和截图；未覆盖项保留给人工，不接受模型编造的试玩证据。",
     hint: '在真实浏览器中自动试玩当前游戏构建；报告证据，不替代人工试玩。',
     inputs: [{ id: 'in', label: '产物', type: 'any' }],
     outputs: [{ id: 'out', label: '自动试玩证据', type: 'json' }],
     config: [
       { key: 'seconds', label: '试玩时长（秒）', kind: 'number', min: 1, max: 60, value: 20 },
+      { key: 'maxRepairs', label: '失败后恢复标准源码（最多一次）', kind: 'number', min: 0, max: 1, value: 1 },
     ],
   },
 
   {
-    id: 'game.create', title: '创建可玩工程', cat: 'tool', actor: 'agent', lines: ['game'], executor: 'dsh-session', capability: 'game-studio', artifactKind: 'file-set',
+    id: 'game.create', title: '创建可玩工程', cat: 'tool', actor: 'auto', lines: ['game'], executor: 'tool-service', capability: 'game-studio', artifactKind: 'file-set',
+    executionPrompt: GAME_EXECUTION_PROMPT,
     requiredChecks: ['game.project.evidence'], exportName: 'prototype-build.json',
-    prompt: '根据已批准的玩法资料调用 DSH 游戏工坊的 game_studio_create 创建实际游戏工程并生成首个可玩构建。只使用一个新的 games/<ascii-slug> 项目目录；slug 仅含小写英文字母、数字和连字符。根据资料确定游戏标题、画面方向与美术风格，使用本节点配置的模板。按玩法为角色、敌人、收集物和背景设置清晰的中文槽位名。不要生成图片，不要发布或分享。工具返回的 build.buildId、build.bytes 才是构建证据；规范化输出 JSON：{"project":"工具返回的 project","title":"工具返回的 title","template":"本节点实际模板","buildId":"工具返回的 build.buildId","bytes":0,"previewAvailable":true}。不得虚构构建或路径。',
+    prompt: "由工作台原生工坊根据已批准规则创建固定 2D collector 工程及首版构建；工程、目录、构建证据由宿主绑定，不调用外部游戏插件。",
     hint: '从获批的设计包创建真实浏览器游戏工程和首个可玩版本。',
     inputs: [{ id: 'in', label: '已批准设计包', type: 'any' }], outputs: [{ id: 'out', label: '游戏工程与首版构建', type: 'json' }],
     config: [
-      { key: 'template', label: '游戏模板', kind: 'select', options: ['collector', 'voxel'], value: 'collector', hint: 'collector 为 2D 收集躲避；voxel 为 3D 体素场景。' },
+      { key: 'template', label: '游戏模板', kind: 'select', options: ['collector'], value: 'collector', hint: '原生固定 2D 收集躲避模板；暂不支持体素或任意引擎。' },
+      { key: 'durationSeconds', label: '单局秒数（规则中显式值优先）', kind: 'number', min: 1, max: 60, value: 15 },
+      { key: 'hearts', label: '初始生命（规则中显式值优先）', kind: 'number', min: 1, max: 9, value: 3 },
       { key: 'orientation', label: '屏幕方向', kind: 'select', options: ['portrait', 'landscape'], value: 'portrait' },
       { key: 'style', label: '美术风格', kind: 'text', value: '' },
     ],
   },
   {
-    id: 'game.revise', title: '按试玩证据修订', cat: 'tool', actor: 'agent', lines: ['game'], executor: 'dsh-session', capability: 'game-studio', artifactKind: 'json',
+    id: 'game.revise', title: '按试玩证据修订', cat: 'tool', actor: 'auto', lines: ['game'], executor: 'tool-service', capability: 'game-studio', artifactKind: 'json',
+    executionPrompt: GAME_EXECUTION_PROMPT,
     requiredChecks: ['game.revision.evidence'], exportName: 'prototype-revision.json',
-    prompt: '输入 JSON 包含实际项目路径、初版构建和试玩证据。先用 DSH 工具读取项目状态，再实际读取该工程的 game.json 和 game.js。针对可复现错误、目标不可达、控制不响应、画面越界或试玩未覆盖的核心机制修订代码。保持批准的设计范围，不做顺手扩张；如报告没有可复现缺陷，原样保留代码并说明无需修改。只修改输入路径所指的游戏工程，不触碰工作台仓库或其他文件。不要生图、分享或发布。只输出 JSON：{"project":"原项目相对路径","title":"游戏标题","buildId":"初版构建 ID","changes":["实际修改文件及原因"],"noChangesReason":"无需修订时的原因","manualChecksRequired":["仍需人工验证的项目"]}。不得声称已试玩修订版；下一节点将重新构建。',
+    prompt: "由宿主对照真实试玩报告核对工作副本和被测快照；试玩内最多一次恢复标准源码并真实重测，失败则CAS回退并保留证据。源码候选不能改变批准规则或削弱通过条件。",
     hint: '读取游戏源码，依据首轮试玩证据修复问题或明确记录无需改动。',
     inputs: [{ id: 'in', label: '初版与首轮试玩证据', type: 'any' }], outputs: [{ id: 'out', label: '修订记录', type: 'json' }],
     config: [],
   },
   {
-    id: 'game.build', title: '构建游戏', cat: 'tool', actor: 'agent', lines: ['game'], executor: 'dsh-session', capability: 'game-studio', artifactKind: 'json',
+    id: 'game.build', title: '构建游戏', cat: 'tool', actor: 'auto', lines: ['game'], executor: 'tool-service', capability: 'game-studio', artifactKind: 'json',
+    executionPrompt: GAME_EXECUTION_PROMPT,
     requiredChecks: ['game.project.evidence'], exportName: 'final-build.json',
-    prompt: '从输入 JSON 中取出唯一的游戏项目路径和标题，调用 DSH 游戏工坊的 game_studio_build 构建修订后的游戏。失败时原样报告错误并停止，不得用旧构建冒充新构建。不要改写设计、发布、分享或生成图片。工具返回的 project、buildId、bytes、artifact 才是构建证据；只输出 JSON：{"project":"工具返回的 project","title":"输入中的游戏标题","buildId":"工具返回的新构建 ID","bytes":0,"artifact":"工具返回的 artifact","note":"工具返回的 note（没有则为空）"}。不得虚构构建 ID 或路径。',
+    prompt: "由工作台原生工坊构建同一已登记工程，保留真实 buildId、文件字节数、hash、快照和预览地址。",
     hint: '实际重建游戏并记录版本、构建 ID 与预览产物。',
     inputs: [{ id: 'in', label: '修订后的游戏工程', type: 'any' }], outputs: [{ id: 'out', label: '最终构建', type: 'json' }], config: [],
   },
   {
-    id: 'game.package', title: '导出离线游戏', cat: 'output', actor: 'agent', lines: ['game'], executor: 'dsh-session', capability: 'game-studio', artifactKind: 'json',
+    id: 'game.package', title: '导出离线游戏', cat: 'output', actor: 'auto', lines: ['game'], executor: 'tool-service', capability: 'game-studio', artifactKind: 'json',
+    executionPrompt: GAME_EXECUTION_PROMPT,
     requiredChecks: ['game.package.evidence'], exportName: 'offline-game-export.json',
-    prompt: '输入包含最终构建、其构建 ID 及自动试玩证据。先确认自动试玩使用的 ID 与最终构建相同，再调用 DSH 游戏工坊的 game_studio_export 导出一个自包含、离线可运行的 HTML 文件。工具返回的 file、bytes 才是导出证据；规范化输出 JSON：{"project":"工具返回的 project","buildId":"输入中的最终构建 ID","exportPath":"工具返回的 file","bytes":0,"offline":true}。不要部署、发布或创建分享链接，不得虚构导出结果。',
+    prompt: "由工作台核对最终构建、自动试玩和当前源码的一致性，精确导出已试玩 buildId；不重新构建、不发布、不分享。",
     hint: '把最终已试玩版本导出为单文件 HTML；不联网发布。',
     inputs: [{ id: 'in', label: '最终试玩与构建证据', type: 'any' }], outputs: [{ id: 'out', label: '离线 HTML 交付物', type: 'json' }], config: [],
   },

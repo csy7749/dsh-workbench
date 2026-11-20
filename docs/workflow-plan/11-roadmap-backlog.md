@@ -355,3 +355,34 @@ K0 出口为 M0 报告；K1 随 M1/M2 分别通过假服务与真实路径，不
 - [ ] L3-03：依赖 L3-01/02，完成比较 / 迁移真实试点、配额、关闭与历史保留验收；需要接入实验时另依赖 L2。
 
 L0 出口为可核查的继续 / 降级报告。L1 自动研习不能以假执行器替代真实只读能力验收；能力不足保留人工阅读 / 导入，标明自动部分未通过。L2 实测隔离和执行，L3 实测比较与任务转化；远程仓库自动获取、多员工、向量检索与长期记忆不属于 L1–L3 的隐含发布条件。
+
+## 16. GS 原生游戏工坊工作包
+
+2026-11-19 开始实施，详见 [19 原生 Game Studio](19-native-game-studio.md)。GS 是本次工作台自有实现的独立编号，不追溯勾选旧插件 P 阶段或 W4；共享存储、工作流和权限能力只估算一次。以下为 GS 任务状态清单。
+
+- [ ] GS0-01：来源 / 许可证清单、固定 manifest / 工具契约、目录权限及预览嵌入 Spike。状态：已记录来源版本、原创模板与 14 工具 schema；隔离 HTTP 与真实浏览器父页面访问反例通过。当前 DrawAI / AnyAudio 为原创受限格式桥，Blender 为原创固定 worker，不执行完整上游插件。第三方来源逐文件清单和实际 DSH 嵌入验收仍待补齐，不据自动测试勾选整项。
+- [x] GS1-01：实现产品绑定的工程登记、原创 2D 固定模板、create / build 与宿主工具注册。证据：`src/host/native-game-studio.mjs`、`native-game-template.mjs`、`native-game-tools.ts`，`workbench_game_create/build` 接现有 `write.local` 策略。
+- [x] GS1-02：实现冻结输入 / 产物快照、内容指纹、同输入复用、缓存完整性、普通构建失败保留、路径与文件链接拒绝。证据：`scripts/verify-native-game-studio.mjs` 通过；只解析 JS，不在宿主执行。
+- [ ] GS1-03：完善崩溃后锁 / 临时目录恢复、快照配额及磁盘故障对账。已实现 token / PID 构建锁、确认死进程后的互斥回收、构建 / 报告 / 恢复备份配额及 CAS 失败保护；活 owner、未知锁 / recovery claim 和未知 pending 失败关闭，不批量删除。跨文件断电、磁盘故障与完整人工清理策略尚未验收，不承诺 `dist` 与 latest 跨文件事务，整项保留未完成。
+- [x] GS1-04：受控版本事务、源码 / manifest 差异、CAS 历史恢复及原字节备份。证据：`native-game-studio.mjs`、`verify-native-game-history.mjs`；恢复和更新只回退本次拥有的字节，外部编辑冲突停止，恢复后试玩仍未评估。
+- [x] GS2-01：受限预览路由 / iframe、工程入口、指定 buildId 离线导出及回读。证据：核心版本 / 导出冲突反例、HTTP 19 个真实响应、原模板下载 / 导出逐字节一致及 Edge 父页面访问被拒绝。运行节点卡片已接打开 / 下载 / iframe；DSH 真窗口由联合测试补验。
+- [x] GS3-01：capability manifest / 副作用前预检、run / attempt 授权、幂等记录、节点映射及取消 / 恢复。证据：runner 反例与适配器合同专项通过；原 14 节点模板及旧冻结外部提示完成 6 个真实宿主操作。批准规则必须显式含 `nativeTemplate=canvas-collector@1`、整数 durationSeconds 3–60 / hearts 1–9，否则暂停且不创建。旧批准规则缺字段在原画布回到审核补齐并重新批准；旧外部证据不混用。取消不采用迟到结果，重启未知结果不自动重放，需显式放弃。完成的是原生执行服务与自动集成验证，真实 DSH / 模型联合验收未做。
+- [x] GS4-01：自动试玩 provider、buildId 绑定的报告 / 截图 / 未覆盖项。证据：生产 Playwright + 已安装 Edge 的输入 / 采集 / 获胜、JS 失败、CSP 联网拒绝、provider 缺失、并发、取消留报告、旧版拒绝及恢复专项通过；原模板两轮按实际 15 秒 / 3 心至 won，错误和网络 0。修订 / 导出前回读 reportHash / screenshotHashes，缺失与篡改反例通过；最终人工交付仍未通过。
+- [x] GS4-02：不可变 `game.js` 源码候选、单次 CAS 试用、真实浏览器核验、通过采用 / 失败取消回退、冲突与显式恢复。工作流自动修复最多一轮，且只恢复固定 collector 原创标准源码，保持批准规则 / 方向 / 素材；不是模型自动改码或任意游戏修复。证据：`native-game-revisions.mjs`、真实浏览器修订专项及原节点适配器。
+- [ ] GS5-01：参数 / 素材候选、来源与许可、采用、比较和回退；与 S 资产工作包复用，不重复实现产物库。当前仅原生工坊受限子集完成，通用素材处理与 S 产物库完整衔接仍待验收。
+- [x] GS5-02：原创本地素材候选 / 来源许可 / 逐文件 bytes / hash，限定四 slot 的显式采用与 CAS 构建，128 候选 / 256 MiB 存储配额、未知 pending / 链接 / 篡改拒绝。原运行卡片管理抽屉提供版本、素材、源码候选与真实重测；自动路由验证通过，实际桌面操作仍待联合验收。
+- [ ] GS6-01：完整 DrawAI 文档 / 编辑器 / 导出 / 素材桥，独立验收第三方纹理来源、保存冲突、迁移和导出。
+- [x] GS6-S01：原创单页基本形状 `.drawai` / SVG 受限桥；实际用本地上游 parser / SVG exporter 读取生成文件并导出，通过。SVG 为 approximate、禁外部资源；未运行完整 DrawAI 插件 / 编辑器、PNG rasterizer 或第三方纹理，不能勾选整个 GS6。
+- [ ] GS7-01：Blender Skills 最小技能与 Blender MCP、完整后台恢复、模型 / 动画 / 引擎导出及许可。
+- [x] GS7-S01：原创固定 worker 调用本机 Blender 5.3.0，crate / pickup 几何实际输出 `.blend` / GLB / 透明 PNG；真实重开 `.blend` / 导入 GLB、几何 / hash 回读、取消 / 超时 / 未知锁拒绝通过。PNG 可显式采用为 2D sprite；未接 MCP、任意 Python、动画、完整技能库或任意 3D 游戏，不能勾选整个 GS7。
+- [ ] GS8-01：完整 AnyAudio 项目 / 多轨时间线 / 配乐渲染与游戏资产桥，音色 / 音效许可和可选 TTS 授权。
+- [x] GS8-S01：原创确定性短 SFX / PCM WAV 与兼容原生 project / materials 索引；实际用上游 schema / renderer / exporter 校验、混音并导出 WAV，通过。抽屉可试听候选；未运行完整 AnyAudio、SoundFont、MIDI、TTS、在线库或 MP3 / MP4，不能勾选整个 GS8。
+- [ ] GS9-01：按需单独评估引擎 / 发布目标及真实设备验收。
+
+首批历史完成记录：`pnpm run bundle`、原生核心专项、工具注册 13/13、V1 宿主集成（54 个 HTTP 响应及新增游戏断言）、既有游戏模板专项、`npm run verify` 均通过。打包模板在 Edge 157.0.4341.60 的竖屏触屏 / 横屏测试通过；浏览器与资产服务进程检查遇沙箱 `spawn EPERM` 后已授权重跑通过。该证据仅覆盖最初 create / build 批次，详见 19 第 12 节。
+
+原生接线历史续批记录（2026-11-19，五工具批次）：bundle、完整 `npm run verify`、原生核心 / HTTP 19 / runner / adapter、生产浏览器与原 14 节点模板真实全链均通过；另工具注册 16/16、V1 HTTP 54、原模板合成编排 / 轻量设计模板 / 节点分组通过。当时最终测试 buildId=`e0220469ea2b`，6099 bytes，下载与被测快照 hash 一致；父页面访问被沙箱拒绝，人工待办为未通过。这不是下述扩展批次的最终收据，历史命令与恢复步骤见 19 第 13 节。
+
+版本 / 创作桥本轮记录（2026-11-19）：现有 14 工具及管理路由已接入。原 `game-starlight-test` 14 节点在批准规则显式 `creativePack:"local-original-v1"` 时生成并采用两个 DrawAI SVG、两个 AnyAudio WAV，真实两轮试玩 / 构建 / 隔离预览 / 下载导出已联测；缺省 / `none` 不启动素材包，Blender 不被隐式加入。另组合浏览器专项采用真实 Blender PNG，覆盖解码、绘制、采集音源及额外碰撞 / hit 音源启动和重开。上游兼容夹具实际导出 DrawAI SVG 703 bytes、AnyAudio WAV 24044 bytes；这是格式桥证据，不是完整插件运行。
+
+本轮证据目录为 `C:\Users\gh\.codex\visualizations\2026\11\19\01a1f2de-16f7-75d1-93ff-9d7ff40f8b55\native-game-studio-extended`，原模板与含 Blender 的组合专项分别见 `workflow-report.json` / `creative-report.json`，最终 buildId / bytes / hash 以该目录 report 为准。设计输入仍是夹具，不代表真实模型会话；自动输入、音频解码 / SourceStarted 也不代表 DSH 桌面、人工听感或真人交付验收。最终人工门保持 `waiting_review / 未通过`。GS6 / GS7 / GS8 只完成上列 S01 子集，完整编辑器、MCP、任意 3D、多轨音频及 AI 自动修复未交付，详见 19 第 14 节。

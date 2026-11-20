@@ -1,5 +1,22 @@
 // Pure checks shared by generation, review and the kernel adoption gate.
 export const GAME_CHECKS = ['game.rules.schema', 'game.rules.non_empty', 'game.rules.no_placeholder']
+
+export function readNativeCollectorRules(content) {
+  let rules
+  try { rules = JSON.parse(content) } catch {}
+  const { nativeTemplate, durationSeconds, hearts, creativePack } = rules ?? {}
+  if (nativeTemplate !== 'canvas-collector@1' || !Number.isInteger(durationSeconds) || !Number.isInteger(hearts) || (rules.player && rules.player.count !== 1)) {
+    throw new Error('game_approved_scope_unsupported: 原生工坊只支持单人横移、接下落星星计分、碰三角扣血和存活计时获胜。请按此范围修订设计和规则，确认 JSON 包含 nativeTemplate="canvas-collector@1"、整数 durationSeconds 和 hearts。若在运行旧版《星光采集》，请从模板库重新新建。')
+  }
+  if (durationSeconds < 3 || durationSeconds > 60 || hearts < 1 || hearts > 9) {
+    throw new Error('game_approved_rules_out_of_range: 单局时长须为 3–60 秒，初始生命须为 1–9 颗心。')
+  }
+  if (creativePack !== undefined && !['none', 'local-original-v1'].includes(creativePack)) {
+    throw new Error('game_creative_pack_unsupported: creativePack 须为 none 或 local-original-v1。')
+  }
+  return rules
+}
+
 export function validateGameRules(content) {
   let value
   try { value = JSON.parse(content) } catch {}

@@ -12,6 +12,8 @@ import { WorkflowCanvasStore, type GraphRow } from './workflow-canvas-store.js'
 import { createWorkflowRunner } from './workflow-runner.mjs'
 import { reviewContractFor } from '../packs/runtime.mjs'
 import { createWorkflowScheduler } from './workflow-scheduler.mjs'
+import { artifactPreviewFormat } from '../shared/workflow-artifact-format.ts'
+import { runNeedsAttention, sortRunSummaries, type WorkflowRunSummary } from '../shared/workflow-run-summary.ts'
 import {
   CATEGORIES, NODE_DEFS, PRODUCT_LINES, TYPE_COLOR, TYPE_LABEL, templateList,
   type GraphIssue, type WorkflowGraph,
@@ -29,11 +31,12 @@ export interface WorkflowCanvasModuleOptions {
   /** 运行库与产物根目录；不给则禁用「运行」路由，画布本身不受影响。 */
   runsDbPath?: string
   runsRoot?: string
-  products?: () => { id: string; workspacePath: string }[]
+  products?: () => { id: string; workspacePath: string; name?: string; projectId?: string }[]
   sessionEvents?: (sessionId: string) => any[]
   prepareSession?: (sessionId: string, config: any) => Promise<any>
   sessionAdapter?: { create(sessionId: string, cwd: string): Promise<void>; prepare(sessionId: string, config: any): Promise<any>; send(sessionId: string, prompt: string): Promise<void> }
   intervalMs?: number
+  nativeGame?: any
 }
 
 export interface WorkflowCanvasModule {
@@ -105,7 +108,7 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
   let runs: ReturnType<typeof createWorkflowRunner> | null = null
   if (typeof options.runsDbPath === 'string' && options.runsDbPath !== '') {
     try {
-      runs = createWorkflowRunner({ dbPath: options.runsDbPath, root: runnerRoot, productId: 'workbench' })
+      runs = createWorkflowRunner({ dbPath: options.runsDbPath, root: runnerRoot, productId: 'workbench', nativeGame: options.nativeGame })
     } catch (cause) {
       console.warn('[dsh-workbench] 工作流运行库初始化失败（画布仍可用）：', String(cause))
       runs = null
@@ -118,7 +121,7 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
     const compiled = runs.compiled(runId)
     const state = runs.state(runId)
     const byNode = new Map(compiled.map(item => [item.nodeId, item]))
-    const artifactSources = new Map(runs.kernel.query('SELECT s.id,p.source_attempt_id FROM workflow_steps s JOIN workflow_adoptions a ON a.id=s.current_adoption_id JOIN workflow_snapshots p ON p.id=a.snapshot_id WHERE s.run_id=?', runId).map((row: any) => [row.id, row.source_attempt_id]))
+    const artifacts = new Map<string, { source_attempt_id: string; artifact_type: string }>(runs.kernel.query('SELECT s.id,p.source_attempt_id,p.artifact_type FROM workflow_steps s JOIN workflow_adoptions a ON a.id=s.current_adoption_id JOIN workflow_snapshots p ON p.id=a.snapshot_id WHERE s.run_id=?', runId).map((row: any) => [row.id, row]))
     const steps = state.steps.map((row: any) => {
       const item = byNode.get(row.node_id)
       const owner = runs.kernel.one('SELECT id FROM workflow_attempts WHERE step_id=? ORDER BY attempt_no DESC LIMIT 1', row.id) ?? runs.kernel.one('SELECT id FROM workflow_human_tasks WHERE step_id=? ORDER BY task_revision DESC LIMIT 1', row.id)
@@ -132,22 +135,24 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
         } catch { /* Older or incomplete attempts have no readable binding. */ }
       }
       const content = runs.content(runId, row.node_id)
+      const artifact = artifacts.get(row.id)
       let displayContent = content
       if (item?.step?.portPayloads === 'check-v1' && content) {
-        try { displayContent = JSON.stringify(JSON.parse(content).report, null, 2) } catch { /* preserve readable raw data */ }
+        try { displayContent = JSON.stringify(JSON.parse(content).report, null, 2) ?? content } catch { /* preserve readable raw data */ }
       }
       return {
         stepId: row.id,
-        sourceAttemptId: artifactSources.get(row.id) ?? null,
+        sourceAttemptId: artifact?.source_attempt_id ?? null,
         nodeId: row.node_id,
         revision: row.revision,
         title: item?.title ?? row.node_id,
         type: item?.type ?? '',
         kind: item?.kind ?? 'static',
-        description: item?.contract?.prompt ?? '',
+        description: item?.kind === 'static' && item?.type?.startsWith('game.') ? '工作台原生工坊程序任务：身份与构建证据由宿主校验，直接写入本次尝试。' : item?.contract?.prompt ?? '',
         state: row.state,
         stale: row.stale === 1,
         content: displayContent,
+        ...(displayContent ? { artifactFormat: artifactPreviewFormat(displayContent, { nodeType: item?.type, ...item?.contract, snapshotType: artifact?.artifact_type }) } : {}),
         inputs,
         omittedInputs,
         executionConfig: item?.executionConfig,
@@ -161,9 +166,9 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
       const editor = reviewContractFor(byNode.get(open?.nodeId))
       waiting = { editor: editor ? { kind: editor.kind, fields: editor.fields, regenerateLabel: editor.regenerateLabel } : null, sources: runs.reviewSources(runId, open?.nodeId), kind: 'human', nodeId: open?.nodeId ?? null, title: open?.title ?? '', taskId: task?.id ?? null, content: draft?.draft?.content ?? draft?.currentInput?.content ?? '', bindingVersion: draft?.binding?.version, taskRevision: draft?.taskRevision, revisions: runs.revisions(runId) }
     } else if (open !== null && (state.run.status === 'created' || state.run.status === 'running')) {
-      waiting = { kind: open.kind, nodeId: open.nodeId, title: open.title, taskId: null, content: open.content }
+      waiting = { kind: open.state === 'running' && open.kind === 'static' ? 'running' : open.kind, nodeId: open.nodeId, title: open.title, taskId: null, content: open.content }
     }
-    return { runId, status: state.run.status, revision: state.run.revision, pauseReason: state.run.pause_reason, steps, waiting, auto: runs.autoState(runId), generation: runs.generation(runId), attempts: runs.attempts(runId), revisions: runs.revisions(runId), validations: runs.kernel.listValidations(runId), events: runs.events(runId) }
+    return { runId, status: state.run.status, revision: state.run.revision, pauseReason: state.run.pause_reason, steps, waiting, auto: runs.autoState(runId), generation: runs.generation(runId), attempts: runs.attempts(runId), nativeOperations: runs.nativeOperations(runId), revisions: runs.revisions(runId), validations: runs.kernel.listValidations(runId), events: runs.events(runId) }
   }
 
   const runnerStart = (runId: string, graph: any, productId: string): any => runs!.start({ graph, runId, productId: productId || 'workbench' })
@@ -188,6 +193,33 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
     if (parts.length === 0 || (parts.length === 1 && parts[0] === 'catalog')) {
       if (method !== 'GET') { fail(res, 405, '只支持 GET'); return true }
       send(res, 200, { ...(catalog() as object), templates: [...templateList(), ...store.listTemplates()] })
+      return true
+    }
+
+    if (parts.length === 1 && parts[0] === 'run-summaries') {
+      if (method !== 'GET') { fail(res, 405, '只支持 GET'); return true }
+      if (!runs) { fail(res, 503, '工作流运行库暂不可用'); return true }
+      try {
+        const products = new Map((options.products?.() ?? []).map(product => [product.id, product]))
+        const summaries: WorkflowRunSummary[] = runs.listSummaries().map((row: any) => {
+          const steps = JSON.parse(row.stepsJson || '[]') as { nodeId: string; title: string; state: string; stale: number }[]
+          const current = steps.find(step => ['failed', 'waiting_review', 'running'].includes(step.state))
+            ?? steps.find(step => step.stale || !['succeeded', 'skipped', 'cancelled'].includes(step.state))
+          const product = products.get(row.productId)
+          const workspacePath = product?.workspacePath ?? ''
+          const { stepsJson: _, ...meta } = row
+          return {
+            ...meta, graphId: row.graphId ?? '', graphName: row.graphName || '未命名流程',
+            productName: product?.name || (product ? row.productId : '已删除产品'), workspacePath,
+            projectName: workspacePath.split(/[\\/]/).filter(Boolean).pop() || '未关联工作区',
+            completedSteps: steps.filter(step => step.state === 'succeeded' && !step.stale).length,
+            totalSteps: steps.length, skippedSteps: steps.filter(step => step.state === 'skipped' && !step.stale).length,
+            currentNodeId: current?.nodeId ?? null, currentNodeTitle: current?.title ?? null,
+            needsAttention: runNeedsAttention(row),
+          }
+        })
+        send(res, 200, { ok: true, runs: sortRunSummaries(summaries), fetchedAt: new Date().toISOString(), historyLimit: 20 })
+      } catch (cause) { fail(res, 503, message(cause)) }
       return true
     }
 
@@ -229,6 +261,10 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
         const runId = 'run-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
         try {
           ownerOf(found.row.product_id)
+          if (found.graph.nodes.some(node => ['game.create', 'game.playtest', 'game.revise', 'game.build', 'game.package'].includes(node.type))) {
+            if (!options.nativeGame) throw new Error('capability_unavailable: native_game_service')
+            await options.nativeGame.preflight({ productId: found.row.product_id, nodes: found.graph.nodes })
+          }
           runnerStart(runId, { ...found.graph, id: found.row.id, sourceRevision: found.row.revision }, found.row.product_id)
           if (body.automatic === true) {
             runs.enableAuto(runId)
@@ -248,6 +284,14 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
         } catch (cause) {
           fail(res, 404, message(cause))
         }
+        return true
+      }
+
+      if (parts.length === 3 && parts[2] === 'context' && method === 'GET') {
+        const runId = decodeURIComponent(parts[1])
+        try {
+          send(res, 200, { ok: true, graph: runs.frozenGraph(runId), productId: runs.productId(runId), view: viewOf(runId) })
+        } catch (cause) { fail(res, 404, message(cause)) }
         return true
       }
 
@@ -320,6 +364,11 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
           }
           if (action === 'generation-abandon' && method === 'POST') {
             runs.abandonGeneration(runId, body.sessionId, body.expectedRevision)
+            send(res, 200, { ok: true, view: viewOf(runId) })
+            return true
+          }
+          if (action === 'native-abandon' && method === 'POST') {
+            runs.abandonNative({ runId, attemptId: body.attemptId, expectedRevision: body.expectedRevision })
             send(res, 200, { ok: true, view: viewOf(runId) })
             return true
           }
@@ -494,5 +543,5 @@ export function createWorkflowCanvasModule(options: WorkflowCanvasModuleOptions)
     return false
   }
 
-  return { store, handle, dispose() { scheduler.dispose(); runs?.kernel.db.close() } }
+  return { store, handle, dispose() { scheduler.dispose(); if (runs) { const current = runs; void current.dispose().finally(() => current.kernel.db.close()) } } }
 }

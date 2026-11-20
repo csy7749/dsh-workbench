@@ -12,6 +12,9 @@ import { createRoot } from 'react-dom/client'
 import { NODE_WIDTH, alignSelection, connectionChoices, duplicateSelection, fitGraph, graphBounds, historyStack, layoutGraph, type ConnectionTarget } from './canvas-editor.ts'
 import { readCanvasDraft, writeCanvasDraft } from './canvas-drafts.ts'
 import { groupRunNodes, type RunStep, type RunRevision, type RunAttempt, type RunSessionSummary } from './run-node-summary.ts'
+import { workflowRunMonitor } from './run-monitor.ts'
+import { nativeGameLinks } from '../../shared/native-game-links.ts'
+import { NativeGamePanel } from './native-game-panel.tsx'
 import {
   CATEGORIES, PRODUCT_LINES, defById, emptyGraph, lineOf, summarizeIssues,
   TYPE_LABEL, canConnect, planOf, validateGraph,
@@ -54,7 +57,7 @@ interface Catalog {
 interface GraphRow { id: string; name: string; line: string; revision: number; updated_at: string; nodes: number; edges: number }
 
 interface RunWaiting { editor?: { kind: string; fields: { key: string; label: string }[]; regenerateLabel: string }; sources?: { nodeId: string; title: string; snapshotId: string; content: string }[]; revisions?: RunRevision[]; kind: string; nodeId: string | null; title: string; taskId: string | null; content: string; bindingVersion?: number; taskRevision?: number }
-interface RunView { auto?: { enabled: number; state: string; session_id?: string | null; reason?: string | null } | null; generation?: { session_id: string } | null; runId: string; revision: number; status: string; pauseReason?: string; attempts?: RunAttempt[]; revisions?: RunRevision[]; validations?: any[]; events?: any[]; steps: RunStep[]; waiting: RunWaiting | null }
+interface RunView { auto?: { enabled: number; state: string; session_id?: string | null; reason?: string | null } | null; generation?: { session_id: string } | null; runId: string; revision: number; status: string; pauseReason?: string; attempts?: RunAttempt[]; nativeOperations?: { attempt_id: string; status: string; node_id: string; result_json?: string; error?: string }[]; revisions?: RunRevision[]; validations?: any[]; events?: any[]; steps: RunStep[]; waiting: RunWaiting | null }
 
 
 const RUN_STATUS: Record<string, string> = {
@@ -206,6 +209,8 @@ const CSS = `
 .wf-side-artifact-head{display:flex;align-items:center;gap:8px;padding:9px 10px;border-bottom:1px solid rgba(52,211,153,.32);background:rgba(16,185,129,.19);color:#a7f3d0;font-size:12px;font-weight:700}
 .wf-side-artifact-head span:last-child{margin-left:auto;padding:2px 6px;border-radius:4px;background:rgba(0,0,0,.2);font-size:10px;font-weight:600;white-space:nowrap}
 .wf-side-artifact pre{margin:0;padding:11px;min-height:48px;max-height:46vh;overflow:auto;border:0;background:transparent;color:#ecfdf5;font-size:11.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.wf-artifact-view{min-width:0}.wf-artifact-tools{display:flex;align-items:center;gap:5px;padding:7px 8px;border-bottom:1px solid rgba(52,211,153,.2);font-size:10px;color:#a7f3d0}.wf-artifact-tools button{padding:2px 6px;border:1px solid rgba(167,243,208,.35);border-radius:4px;background:transparent;color:inherit;font:inherit;cursor:pointer}.wf-artifact-tools button[data-on="1"]{background:rgba(52,211,153,.2)}
+.wf-artifact-preview{padding:10px 11px;max-height:46vh;overflow:auto;color:#ecfdf5;font-size:11.5px;line-height:1.6;overflow-wrap:anywhere}.wf-artifact-preview h1,.wf-artifact-preview h2,.wf-artifact-preview h3,.wf-artifact-preview h4,.wf-artifact-preview h5,.wf-artifact-preview h6{margin:0 0 7px;color:#d1fae5;line-height:1.35}.wf-artifact-preview p{margin:0 0 7px}.wf-artifact-preview ul,.wf-artifact-preview ol{margin:0 0 7px;padding-left:20px}.wf-artifact-preview blockquote{margin:0 0 7px;padding-left:9px;border-left:2px solid rgba(167,243,208,.5);opacity:.85}.wf-artifact-preview pre{margin:7px 0;padding:8px;max-height:none;overflow:auto;background:rgba(0,0,0,.25);border-radius:4px;color:#d1fae5;white-space:pre-wrap}.wf-artifact-preview code{font-family:ui-monospace,Consolas,monospace}.wf-artifact-preview table{width:100%;border-collapse:collapse;margin:7px 0;font-size:10.5px}.wf-artifact-preview th,.wf-artifact-preview td{padding:4px 6px;border:1px solid rgba(167,243,208,.25);text-align:left;vertical-align:top}.wf-artifact-warning{padding:7px 8px;color:#fde68a;font-size:10px;border-bottom:1px solid rgba(251,191,36,.2)}
 .wf-side-section-title{display:flex;align-items:center;gap:7px;margin:18px -12px 10px;padding:10px 12px;border-top:1px solid rgba(255,255,255,.13);border-bottom:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.035);font-size:11px;font-weight:700;color:#e2e8f0}
 .wf-side-section-title::before{content:"";width:3px;height:13px;border-radius:2px;background:#94a3b8}
 .wf-side h4{margin:0 0 8px;font-size:12px;font-weight:600}
@@ -330,6 +335,82 @@ function installDraftWarning(): void {
   window.addEventListener('beforeunload', event => { if (canvasDrafts.size) { event.preventDefault(); event.returnValue = '' } })
 }
 
+function artifactEsc(value: string): string {
+  return value.replace(/[&<>\"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char] ?? char))
+}
+
+function markdownPreviewHtml(markdown: string): string {
+  const lines = markdown.replace(/\r\n?/g, '\n').split('\n')
+  let html = ''
+  let list: 'ul' | 'ol' | null = null
+  let code: string[] | null = null
+  const closeList = (): void => { if (list) { html += `</${list}>`; list = null } }
+  const inline = (value: string): string => artifactEsc(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/_([^_]+)_/g, '<em>$1</em>')
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (/^\s*```/.test(line)) {
+      if (code) { html += `<pre><code>${artifactEsc(code.join('\n'))}</code></pre>`; code = null }
+      else code = []
+      continue
+    }
+    if (code) { code.push(line); continue }
+    if (!line.trim()) { closeList(); continue }
+    const heading = line.match(/^\s*(#{1,6})\s+(.*)$/)
+    if (heading) { closeList(); html += `<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`; continue }
+    if (/^\s*>/.test(line)) { closeList(); html += `<blockquote>${inline(line.replace(/^\s*>\s?/, ''))}</blockquote>`; continue }
+    const unordered = line.match(/^\s*[-*+]\s+(.*)$/)
+    const ordered = line.match(/^\s*\d+\.\s+(.*)$/)
+    if (unordered || ordered) {
+      const kind = unordered ? 'ul' : 'ol'
+      if (list !== kind) { closeList(); html += `<${kind}>`; list = kind }
+      const text = (unordered ?? ordered)?.[1] ?? ''
+      html += `<li>${inline(text.replace(/^\[([ xX])\]\s+/, match => match.startsWith('[x') || match.startsWith('[X') ? '☑ ' : '☐ '))}</li>`
+      continue
+    }
+    if (/^\s*\|/.test(line) && /^\s*\|?\s*:?-{2,}/.test(lines[index + 1] ?? '')) {
+      closeList()
+      const cells = (value: string): string[] => value.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => inline(cell.trim()))
+      const header = cells(line); index += 1; html += `<table><thead><tr>${header.map(cell => `<th>${cell}</th>`).join('')}</tr></thead><tbody>`
+      while (/^\s*\|/.test(lines[index + 1] ?? '')) { index += 1; html += `<tr>${cells(lines[index]).map(cell => `<td>${cell}</td>`).join('')}</tr>` }
+      html += '</tbody></table>'; continue
+    }
+    closeList(); html += `<p>${inline(line)}</p>`
+  }
+  if (code) html += `<pre><code>${artifactEsc(code.join('\n'))}</code></pre>`
+  closeList()
+  return html || '<p class="muted">还没有内容。</p>'
+}
+
+function ArtifactViewer(props: { content: string; format?: RunStep['artifactFormat']; compact?: boolean }): ReactElement {
+  const [source, setSource] = useState(false)
+  const format = props.format ?? 'text'
+  let display = props.content
+  let invalidJson = false
+  if (format === 'json') {
+    try { display = JSON.stringify(JSON.parse(props.content), null, 2) }
+    catch { invalidJson = true }
+  }
+  return h('div', { className: 'wf-artifact-view' },
+    h('div', { className: 'wf-artifact-tools' },
+      h('span', null, format === 'markdown' ? 'Markdown 预览' : format === 'json' ? 'JSON 预览' : '纯文本'),
+      h('span', { style: { marginLeft: 'auto' } }, invalidJson ? '格式错误 · 原文' : ''),
+      format !== 'text' ? h('button', { type: 'button', 'data-on': source ? '0' : '1', onClick: () => setSource(false) }, '预览') : null,
+      h('button', { type: 'button', 'data-on': source ? '1' : '0', onClick: () => setSource(true) }, '原文'),
+    ),
+    invalidJson ? h('div', { className: 'wf-artifact-warning' }, 'JSON 无法解析，已保留原文供检查。') : null,
+    source || format === 'text' || invalidJson
+      ? h('pre', { className: 'wf-artifact-preview', style: props.compact ? { maxHeight: '180px' } : undefined }, props.content)
+      : format === 'json'
+        ? h('pre', { className: 'wf-artifact-preview', style: props.compact ? { maxHeight: '180px' } : undefined }, display)
+        : h('div', { className: 'wf-artifact-preview', style: props.compact ? { maxHeight: '180px' } : undefined, dangerouslySetInnerHTML: { __html: markdownPreviewHtml(props.content) } }),
+  )
+}
+
 export function CanvasPanel(props: CanvasScope = {}): ReactElement {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [list, setList] = useState<GraphRow[]>([])
@@ -344,7 +425,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
   const [busy, setBusy] = useState(false)
   const [templateDraft, setTemplateDraft] = useState<{ name: string; fields: { nodeId: string; key: string; value: unknown }[]; keep: string[] } | null>(null)
   const [line, setLine] = useState<ProductLineId>(PRODUCT_LINES[0].id)
-  const [displayMode, setDisplayMode] = useState<'progress' | 'canvas'>('canvas')
+  const [displayMode, setDisplayMode] = useState<'progress' | 'canvas'>(props.initialRunId ? 'progress' : 'canvas')
   const [nodeLibraryCollapsed, setNodeLibraryCollapsed] = useState(false)
   const [selection, setSelection] = useState<string[]>([])
   const [selectedEdge, setSelectedEdge] = useState<number | null>(null)
@@ -358,6 +439,10 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
   const [picked, setPicked] = useState<string | null>(null)
 
   const canvasRef = useRef<HTMLDivElement | null>(null)
+  const runFocusRef = useRef<HTMLDivElement | null>(null)
+  const [runLoadVersion, setRunLoadVersion] = useState(0)
+  const [runContext, setRunContext] = useState<{ name: string; revision: number | null } | null>(null)
+  const summaryRevisionRef = useRef('')
   const dragRef = useRef<DragState | null>(null)
   const viewRef = useRef(view)
   const docRef = useRef(doc)
@@ -391,6 +476,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
   }, [productPath])
 
   useEffect(() => {
+    if (props.initialRunId) return
     let alive = true
     void (async () => {
       const result = await call<Catalog>('/catalog')
@@ -407,7 +493,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
       }
     })()
     return () => { alive = false }
-  }, [refreshList, toast, scopeKey])
+  }, [refreshList, toast, scopeKey, props.initialRunId])
 
   const openGraph = useCallback(async (id: string) => {
     if (dirty && !window.confirm('当前画布有未保存的改动，切走会丢失。继续？')) return
@@ -432,9 +518,10 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
 
   /** 进来就该看到东西：这个作用域里有图就直接打开最近那张，不给空画布当首屏。 */
   useEffect(() => {
+    if (props.initialRunId) return
     if (doc !== null || docRef.current !== null || list.length === 0 || canvasDrafts.has(scopeKey) || readCanvasDraft(draftStorage(), scopeKey)) return
     void openGraph(list[0].id)
-  }, [list, doc, openGraph, scopeKey])
+  }, [list, doc, openGraph, scopeKey, props.initialRunId])
 
   const createGraph = useCallback(async (templateId?: string, firstNode?: CanvasNode) => {
     if (dirty && !window.confirm('当前画布有未保存的改动，继续新建会丢失这些改动。继续？')) return
@@ -791,12 +878,21 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
      所以这里只提供「提交 / 确认 / 导出」三个动作，不做任何自动填充。 */
   const [run, setRun] = useState<RunView | null>(null)
   const [runDetailsOpen, setRunDetailsOpen] = useState(true)
+  const [focusReview, setFocusReview] = useState(false)
   const [expandedRunNodes, setExpandedRunNodes] = useState<Record<string, boolean>>({})
   const [history, setHistory] = useState<any[]>([])
   const [runText, setRunText] = useState('')
   let reviewDocuments: Record<string, string> | null = null
   try { const value = JSON.parse(runText); const editor = run?.waiting?.editor; if (editor && value?.kind === editor.kind && editor.fields.every(field => typeof value[field.key] === 'string')) reviewDocuments = value } catch {}
   const [runBusy, setRunBusy] = useState(false)
+
+  useEffect(() => {
+    if (!focusReview || !runDetailsOpen) return
+    const root = (runFocusRef.current ?? canvasRef.current)?.getRootNode() as Document | ShadowRoot | undefined
+    const review = root?.querySelector<HTMLElement>('[data-wf-review]')
+    review?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setFocusReview(false)
+  }, [focusReview, runDetailsOpen, run?.waiting?.nodeId])
 
   const editorBaseline = useRef({ key: '', content: '' })
   const applyRun = (data: any, replaceEditor = false): void => {
@@ -808,12 +904,31 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
     setRunText(current => replaceEditor || baseline.key !== key || current === baseline.content ? content : current)
     editorBaseline.current = { key, content }
     setRun(next)
+    const summaryRevision = next.runId + ':' + next.revision + ':' + next.status
+    if (summaryRevisionRef.current !== summaryRevision) {
+      summaryRevisionRef.current = summaryRevision
+      void workflowRunMonitor.refresh()
+    }
   }
 
   useEffect(() => {
     let alive = true
     setRun(null)
     setRunText('')
+    if (props.initialRunId) {
+      setMsg(null)
+      void (async () => {
+        const result = await call<any>('/runs/' + encodeURIComponent(props.initialRunId!) + '/context')
+        if (!alive) return
+        if (!result.ok || result.data?.view?.runId !== props.initialRunId || (props.productId && result.data.productId !== props.productId)) {
+          setMsg({ kind: 'err', text: result.error ?? '运行不存在或产品归属不匹配，请返回工作流重新选择。' })
+          return
+        }
+        setRunContext({ name: result.data.graph?.name ?? '工作流', revision: result.data.graph?.sourceRevision ?? null })
+        applyRun(result.data)
+      })()
+      return () => { alive = false }
+    }
     if (doc?.id) void (async () => {
       const history = await call<any>('/runs?graphId=' + encodeURIComponent(doc.id))
       if (alive) setHistory(history.data?.runs ?? [])
@@ -823,7 +938,21 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
       if (alive && result.ok) applyRun(result.data)
     })()
     return () => { alive = false }
-  }, [doc?.id])
+  }, [doc?.id, props.initialRunId, props.productId, runLoadVersion])
+
+  useEffect(() => {
+    if (!props.initialRunId || !run) return
+    const nodeId = run.waiting?.nodeId ?? props.initialNodeId ?? run.steps.find(step => ['failed', 'running', 'waiting_review'].includes(step.state))?.nodeId
+    if (!nodeId) return
+    setExpandedRunNodes(current => ({ ...current, [run.runId + ':' + nodeId]: true }))
+    const timer = setTimeout(() => {
+      const review = run.waiting?.kind === 'human' ? runFocusRef.current?.querySelector<HTMLElement>('[data-wf-review]') : null
+      const node = review ?? Array.from(runFocusRef.current?.querySelectorAll<HTMLElement>('[data-run-node]') ?? []).find(el => el.getAttribute('data-run-node') === nodeId)
+      node?.scrollIntoView?.({ block: 'nearest' })
+      ;(review?.querySelector<HTMLElement>('textarea,button') ?? node)?.focus({ preventScroll: true })
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [run?.runId, props.initialRunId, props.initialNodeId])
 
   const startRun = async (automatic = false): Promise<void> => {
     if (doc === null) return
@@ -924,6 +1053,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
       const content = runText
       const result = await call<any>('/runs/' + encodeURIComponent(run.runId) + '/confirm', { method: 'POST', body: JSON.stringify({ taskId: run.waiting.taskId, content, intent, expectedBindingVersion: run.waiting.bindingVersion, expectedTaskRevision: run.waiting.taskRevision, expectedRunRevision: run.revision }) })
       if (!result.ok) { setMsg({ kind: 'err', text: result.error ?? '确认失败' }); return }
+      setMsg(null)
       applyRun(result.data)
     } finally { setRunBusy(false) }
   }
@@ -940,7 +1070,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
   }
 
   useEffect(() => {
-    if (!run?.auto?.enabled || !['created', 'running'].includes(run.status)) return
+    if (!run || (!props.initialRunId && !run.auto?.enabled) || (props.initialRunId ? ['completed', 'cancelled', 'failed'].includes(run.status) : !['created', 'running'].includes(run.status))) return
     let alive = true
     let timer: ReturnType<typeof setTimeout>
     const poll = async (): Promise<void> => {
@@ -951,7 +1081,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
     }
     timer = setTimeout(() => { void poll() }, 1200)
     return () => { alive = false; clearTimeout(timer) }
-  }, [run?.runId, run?.auto?.enabled, run?.status])
+  }, [run?.runId, run?.auto?.enabled, run?.status, props.initialRunId])
 
   const controlRun = async (action: string): Promise<void> => {
     if (!run) return
@@ -1101,9 +1231,11 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
           h('button', { type: 'button', className: 'wf-btn', onClick: () => setExpandedRunNodes(current => ({ ...current, ...Object.fromEntries(run.steps.map(step => [run.runId + ':' + step.nodeId, false])) })) }, '收起全部'),
         ),
         ...nodeGroups.nodes.map(({ step, sessions }, index) => {
+          const gameLinks = !step.stale && step.content ? nativeGameLinks(step.content) : null
+          const nativeEvidence = (run.nativeOperations ?? []).filter(operation => operation.node_id === step.nodeId).at(-1)
           const key = run.runId + ':' + step.nodeId
           const expanded = expandedRunNodes[key] ?? (waiting?.nodeId === step.nodeId || ['running', 'waiting_review', 'failed'].includes(step.state))
-          return h('article', { key, className: 'wf-run-node-card', 'data-st': step.stale ? 'stale' : step.state },
+          return h('article', { key, className: 'wf-run-node-card', 'data-run-node': step.nodeId, tabIndex: -1, 'data-st': step.stale ? 'stale' : step.state },
             h('button', { type: 'button', className: 'wf-run-node-toggle', 'aria-expanded': expanded, onClick: () => setExpandedRunNodes(current => ({ ...current, [key]: !expanded })) },
               h('span', { className: 'wf-run-node-number', 'aria-hidden': true }, String(index + 1).padStart(2, '0')),
               h('span', { className: 'wf-run-node-heading' },
@@ -1118,8 +1250,14 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
               h('section', { className: 'wf-run-artifact', 'aria-label': step.title + '的产物' },
                 h('div', { className: 'wf-run-artifact-head' }, h('span', null, '节点产物'), h('span', null, step.content ? (step.stale ? '历史产物 · 已失效' : '当前采用') + ' · ' + step.content.length + ' 字' : '尚无产物')),
                 step.content ? h('div', null,
+                  gameLinks ? h('div', { style: { margin: '8px 0' } },
+                    h('a', { className: 'wf-btn', href: gameLinks.previewUrl, target: '_blank', rel: 'noopener noreferrer' }, '打开游戏 · ' + gameLinks.buildId),
+                    h('a', { className: 'wf-btn', href: gameLinks.downloadUrl, download: 'game-' + gameLinks.buildId + '.html', style: { marginLeft: '8px' } }, '下载此版本 HTML'),
+                    h('details', { style: { marginTop: '8px' } }, h('summary', null, '在此预览（独立沙箱）'), h('iframe', { src: gameLinks.artifactUrl, sandbox: 'allow-scripts', title: step.title + '游戏预览', loading: 'lazy', referrerPolicy: 'no-referrer', style: { display: 'block', width: '100%', maxWidth: '720px', height: '560px', border: 0, marginTop: '8px', background: '#0b1420' } })),
+                    h(NativeGamePanel, { content: step.content }),
+                  ) : null,
                   h('pre', null, step.content.slice(0, 260) + (step.content.length > 260 ? '…' : '')),
-                  h('details', null, h('summary', null, '查看完整产物'), h('pre', null, step.content)),
+                  h('details', null, h('summary', null, '查看完整产物'), h(ArtifactViewer, { content: step.content, format: step.artifactFormat })),
                 ) : h('p', { className: 'wf-run-node-empty' }, step.state === 'skipped' ? '此分支已跳过，没有生成产物。' : '此节点尚未产生已采用的产物。'),
               ),
               h('section', { className: 'wf-run-node-sessions', 'aria-label': step.title + '的会话' },
@@ -1127,6 +1265,11 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
                 ...sessions.map(renderRunSession),
                 sessions.length === 0 ? h('p', { className: 'wf-run-node-empty' }, step.kind === 'agent' ? '还没有关联的模型会话；手动提交的内容不会创建会话。' : '此节点没有模型会话。') : null,
               ),
+              nativeEvidence && nativeEvidence.status !== 'completed' ? h('details', null,
+                h('summary', null, '宿主尝试 · ' + nativeEvidence.status + '（未作为成功产物采用）'),
+                nativeEvidence.error ? h('p', { className: 'wf-issue', 'data-lv': 'error' }, nativeEvidence.error) : null,
+                nativeEvidence.result_json ? h(ArtifactViewer, { content: nativeEvidence.result_json, format: 'json' }) : null,
+              ) : null,
               run.status === 'paused' && step.state === 'succeeded' ? h('button', { type: 'button', className: 'wf-btn', disabled: runBusy, onClick: () => { void rerunStep(step) } }, '重跑此节点') : null,
             ) : null,
           )
@@ -1138,6 +1281,14 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
       ),
       run.pauseReason ? h('div', { className: 'wf-issue', 'data-lv': 'error' }, '停止原因：' + run.pauseReason) : null,
       run.auto?.reason ? h('div', { className: 'wf-issue', 'data-lv': 'error' }, '自动执行：' + run.auto.reason) : null,
+      (run.nativeOperations ?? []).filter(operation => operation.status === 'unknown').map(operation => h('button', { key: operation.attempt_id, className: 'wf-btn', disabled: runBusy, onClick: async () => {
+        if (!window.confirm('该宿主操作的结果未知，可能已生成文件。放弃采用后会保留这些文件，恢复运行将创建新的尝试。确认已核查并放弃本次结果？')) return
+        setRunBusy(true)
+        try {
+          const result = await call<any>('/runs/' + encodeURIComponent(run.runId) + '/native-abandon', { method: 'POST', body: JSON.stringify({ attemptId: operation.attempt_id, expectedRevision: run.revision }) })
+          if (result.ok) applyRun(result.data); else toast('err', result.error ?? '放弃失败')
+        } finally { setRunBusy(false) }
+      } }, '放弃结果未知的宿主尝试 · ' + operation.node_id)),
       run.auto?.state === 'blocked' && run.auto.session_id && !(run.attempts ?? []).some(attempt => attempt.session_id === run.auto?.session_id) ? h('button', { className: 'wf-btn', disabled: runBusy, onClick: async () => {
         setRunBusy(true)
         try {
@@ -1157,12 +1308,13 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
         ? (run.status === 'completed'
             ? h('div', { className: 'wf-hint' }, '流程已完成；命中的节点保留产物，未命中的分支已跳过。点「导出产物」写到磁盘。')
             : null)
-        : h('div', { className: 'wf-run-wait' },
+        : h('div', { className: 'wf-run-wait', 'data-wf-review': waiting.kind === 'human' ? '1' : undefined },
             h('div', { className: 'wf-hint' },
               waiting.kind === 'human'
                 ? '停在第 ' + run.steps.filter(step => step.state === 'succeeded').length + ' 步之后：' + waiting.title + ' 需要人工确认。可直接确认，也可以先改正文。'
                 : waiting.kind === 'agent'
                   ? '下一步「' + waiting.title + '」需要生成正文。可使用 DSH 生成，也可手动提交已有内容；通过校验后才会采用。'
+                  : waiting.kind === 'running' ? '「' + waiting.title + '」由宿主执行中，结果和证据将自动保存；可以暂停或取消。'
                   : '下一步「' + waiting.title + '」是程序节点，点继续即可。'),
             waiting.kind === 'human' ? h('details', null, h('summary', null, '审核参考资料'), ...(waiting.sources ?? []).map(source => h('div', { key: source.nodeId, className: 'wf-run-artifact', style: { marginTop: '6px' } }, h('div', { className: 'wf-run-artifact-head' }, h('span', null, source.title), h('span', null, source.snapshotId)), h('pre', { style: { maxHeight: '150px' } }, source.content)))) : null,
             waiting.kind === 'human' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', margin: '8px 0' } },
@@ -1173,9 +1325,9 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
                 revision.status === 'producing' ? h('button', { className: 'wf-btn', disabled: runBusy, onClick: () => { void collectRevision(revision) } }, '检查候选') : null,
                 revision.status === 'ready' ? h('button', { className: 'wf-btn', disabled: runBusy, onClick: () => { void applyRevision(revision) } }, '应用到草稿') : null,
                 revision.content ? h('pre', { style: { whiteSpace: 'pre-wrap', maxHeight: '160px', overflow: 'auto' } }, revision.content) : null))) : null,
-            waiting.kind === 'static'
+            ['static', 'running'].includes(waiting.kind)
               ? h('div', { style: { display: 'flex', gap: '8px' } },
-                  h('button', { type: 'button', className: 'wf-btn', 'data-primary': '1', disabled: runBusy, onClick: () => { void advanceRun() } }, '继续'))
+                  h('button', { type: 'button', className: 'wf-btn', 'data-primary': '1', disabled: runBusy || waiting.kind === 'running', onClick: () => { void advanceRun() } }, waiting.kind === 'running' ? '执行中…' : '继续'))
               : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
                   waiting.kind === 'agent' ? h('button', { className: 'wf-btn', disabled: runBusy || !!run.generation || !!run.auto?.enabled || !props.createSession, onClick: () => { void generateRun() } }, '使用 DSH 生成') : null,
                   waiting.kind === 'human' && reviewDocuments ? h('div', null,
@@ -1202,9 +1354,28 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
                         } finally { setRunBusy(false) }
                       })()
                     } }, '要求修改并保留待办') : null,
-                    waiting.kind === 'human' && reviewDocuments ? h('button', { className: 'wf-btn', disabled: runBusy, onClick: () => { void reviseDesign() } }, waiting.editor?.regenerateLabel) : null,
+                    waiting.kind === 'human' && reviewDocuments && waiting.editor?.regenerateLabel ? h('button', { className: 'wf-btn', disabled: runBusy, onClick: () => { void reviseDesign() } }, waiting.editor.regenerateLabel) : null,
                     waiting.kind === 'human' ? h('button', { className: 'wf-btn', disabled: runBusy, onClick: () => { void confirmRun('pause') } }, '确认并暂停') : null)),
           ),
+    )
+  }
+
+  if (props.initialRunId) {
+    return h('div', { className: 'wf dsh-wf-root', ref: runFocusRef, 'data-dsh-workflow-run': props.initialRunId },
+      h('div', { className: 'wf-top' },
+        h('b', null, runContext?.name ?? '本次运行'),
+        h('span', { className: 'wf-hint' }, runContext?.revision ? '冻结流程 v' + runContext.revision : '冻结运行'),
+        h('span', { className: 'wf-hint', style: { overflowWrap: 'anywhere' } }, props.initialRunId),
+        h('button', { className: 'wf-btn', onClick: async () => {
+          if (!run) { setRunLoadVersion(version => version + 1); return }
+          const result = await call<any>('/runs/' + encodeURIComponent(props.initialRunId!))
+          if (result.ok) applyRun(result.data)
+          else setMsg({ kind: 'err', text: result.error ?? '运行状态暂时无法更新，保留当前内容。' })
+        } }, '重新读取'),
+      ),
+      msg ? h('div', { className: 'wf-issue', 'data-lv': msg.kind === 'err' ? 'error' : 'info', role: 'status' }, msg.text) : null,
+      !props.productPath ? h('p', { className: 'wf-hint', style: { padding: '0 12px' } }, '原产品已无关联工作区：仍可查看与审核本次运行，无法在此创建新的生成会话。') : null,
+      h('div', { className: 'wf-main' }, run ? runDrawer() : h('p', { className: 'wf-hint', style: { padding: '16px' } }, msg ? '运行未能读取，可重试或返回工作流。' : '正在读取本次运行…')),
     )
   }
 
@@ -1499,6 +1670,8 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
         pickNode: (id: string) => { setSel(id); setSelection([id]); setSelectedEdge(null) },
         hidden: displayMode === 'progress' && doc !== null,
         runStep: run?.steps.find(step => step.nodeId === selectedNode?.id) ?? null,
+        reviewPending: run?.waiting?.kind === 'human' && run.waiting.nodeId === selectedNode?.id,
+        openReview: () => { setRunDetailsOpen(true); setFocusReview(true) },
         toggleNode: (id: string) => mutate(current => ({ ...current, nodes: current.nodes.map(item => item.id === id ? { ...item, disabled: !item.disabled } : item) })),
       }),
       displayMode === 'canvas' && runDetailsOpen ? runDrawer() : displayMode === 'canvas' && run !== null ? h('button', { type: 'button', className: 'wf-run-minimized', 'data-s': run.status, onClick: () => setRunDetailsOpen(true) }, h('span', { className: 'wf-badge', 'data-s': run.status }, RUN_STATUS[run.status] ?? run.status), '运行 · ' + run.steps.filter(step => step.state === 'succeeded').length + '/' + run.steps.length + ' 步', h('b', null, '打开详情')) : null,
@@ -1530,6 +1703,8 @@ interface SideProps {
   deleteNode(id: string): void
   pickNode(id: string): void
   hidden?: boolean
+  reviewPending: boolean
+  openReview(): void
   toggleNode(id: string): void
   runStep: RunStep | null
 }
@@ -1577,7 +1752,12 @@ export function WorkflowSidePanel(props: SideProps): ReactElement {
             h('span', null, '本次运行产物'),
             h('span', null, props.runStep.stale ? '已过期' : STEP_STATUS[props.runStep.state] ?? props.runStep.state),
           ),
-          h('pre', null, props.runStep.content || '此节点尚未产生可采用的内容。'),
+          props.runStep.content ? h(ArtifactViewer, { content: props.runStep.content, format: props.runStep.artifactFormat }) : h('p', { className: 'wf-artifact-preview' }, '此节点尚未产生可采用的内容。'),
+        ) : null,
+        props.reviewPending ? h('section', { className: 'wf-side-artifact', style: { borderColor: 'rgba(251,191,36,.55)', marginBottom: '12px' } },
+          h('div', { className: 'wf-side-artifact-head', style: { borderColor: 'rgba(251,191,36,.35)', background: 'rgba(251,191,36,.12)', color: '#fde68a' } }, '此节点等待人工审核'),
+          h('div', { style: { padding: '9px 10px' } },
+            h('button', { type: 'button', className: 'wf-btn', 'data-primary': '1', onClick: props.openReview }, '打开审核')),
         ) : null,
         props.runStep ? h('details', { style: { marginBottom: '12px' } }, h('summary', null, '运行输入与分支信息'),
           h('div', { style: { padding: '5px 0 2px' } },
@@ -1648,6 +1828,9 @@ function planLabel(plan: Plan): string {
 export interface CanvasScope {
   productPath?: string
   productId?: string
+  /** Exact historical run; renders the existing run inspector without mounting a live graph editor. */
+  initialRunId?: string
+  initialNodeId?: string
   createSession?: () => Promise<string>
   sendSession?: (sessionId: string, prompt: string) => Promise<void>
   openSession?: (sessionId: string) => void

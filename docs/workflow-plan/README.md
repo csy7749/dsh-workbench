@@ -50,6 +50,7 @@
 | [16 OhMyGame 机制吸收](16-ohmygame-workflow-adoption.md) | 共用工具服务、可编辑产物契约、长任务恢复，以及人工节点的实施映射 | W0/W1/W2、执行器和素材适配 |
 | [17 上下文、知识与记忆开发计划](17-context-knowledge-development.md) | 资料基线、冻结与交付证据、W0–W2 实施顺序、后续检索和记忆验收 | 首批实施、上下文与知识能力 |
 | [18 项目研习流程与开发计划](18-project-learning-workflow.md) | 学习目标、项目地图、功能追踪、来源证据、继续学习、实验与借鉴迁移 | L0–L3 独立研习，正式工作流接入另验收 |
+| [19 工作台原生 Game Studio](19-native-game-studio.md) | 自有 Web 游戏工坊的产品边界、来源吸收、工具契约、安全基线与 GS0–GS9 分期；后续纳入 DrawAI、Blender Skills、AnyAudio | 解除工作流对外部游戏插件工具的依赖，并分期接入设计、3D 与音频能力 |
 
 ## 4. 设计基线
 

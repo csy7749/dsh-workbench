@@ -11,5 +11,8 @@ node_modules/
 
 .dsh-workbench/
 
+# 本机 Game Studio 工程、试玩产物和外部研究素材，不随工作台插件发布
+/games/
+
 # 集中验证脚本的产物目录（scripts/run-workflow-concentrated.mjs 生成）
 .workflow-validation/

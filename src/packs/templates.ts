@@ -63,6 +63,49 @@ const GAME_PRODUCT_TEMPLATE = buildTemplate('game', '游戏产品 · 从需求�
   ['package', 'out', 'handoff-review', 'in'],
 ])
 
+const GAME_TEST_BRIEF = [
+  '制作原创浏览器小游戏《星光采集》，作为游戏产品与画布工作流的首次联合测试。',
+  '范围：2D 竖屏、单关卡、单人、每局 15 秒；使用原生 collector 固定模板和内置图形，不调用生图服务、不联网发布。',
+  '玩法：方向键 / A、D 或触屏拖动角色左右移动，接取下落星星加分并躲避红色三角；初始 3 颗心，碰撞扣血，归零失败；存活满 15 秒获胜并显示本局得分。',
+  '批准实现契约：nativeTemplate="canvas-collector@1"、durationSeconds=15、hearts=3。规则 JSON 必须显式保留这些字段。该版本仅实现上述固定完整玩法。保持碰撞和失败规则有效，不用无敌或空场景获得测试通过。',
+  '游戏验收：标题页能开始；键盘与触屏移动有效；拾取后加分；碰撞后扣血；计时结束显示获胜；生命归零显示失败；结算后可重新开始且得分、生命和倒计时复位；界面不越界。',
+  '自动试玩：原型和最终版本各运行 20 秒，使用实际发布参数、不传 rules 覆盖、不使用 characters-only。保存真实报告和截图；自动驾驶未覆盖的失败、重开和触屏行为留给人工试玩，不能声称自动通过。',
+  '交付：原生工坊在产品工作区的 games 目录下创建本次尝试的独立工程，记录真实项目路径、标题、模板、构建 ID 与字节数。',
+  '工作流验收：设计批准前不创建工程；两个试玩节点与构建节点有各自的宿主尝试和证据，不依赖游戏插件会话；最终人工待办保留未通过状态直到真实试玩；保存草稿后刷新仍能恢复；上游重跑后旧下游产物标记过期。',
+  '最终交付单文件离线 HTML。人工打开该文件验证一局和重新开始，并分别记录游戏问题、画布问题及未覆盖项目。没有实际证据时标记未评估。',
+].join('\n\n')
+
+const GAME_TEST_CONFIG: Record<string, Record<string, ConfigValue>> = {
+  brief: { text: GAME_TEST_BRIEF },
+  gdd: { platform: '网页', genre: '2D 单关卡收集躲避', prompt: '严格按需求中的 15 秒试玩范围设计《星光采集》。沿用 collector 可支持的核心循环，写清正常胜负、扣血、计分、重开和键盘/触屏验收；区分自动驾驶证据与人工补测。不扩充关卡、商店、账号或联网功能。' },
+  rules: { prompt: '根据 {{in}} 输出玩法规则 JSON，包含 version=1、title、player{count,controls[]}、goal[]、fail[]、loop[]、acceptance[]、openQuestions[]。若设计符合单人横移、接下落星星和躲三角的固定范围，显式写入 nativeTemplate="canvas-collector@1"、durationSeconds=15、hearts=3、creativePack="none"。不支持的机制写入 openQuestions。只输出 JSON。' },
+  'design-review': { note: '核对 JSON 中的 canvas-collector@1、15 秒、3 颗心，并检查设计稿和规则都使用左右键／A、D 或触屏横向拖动、接星星计分、碰三角扣血、胜负和重开。' },
+  create: { template: 'collector', orientation: 'portrait', durationSeconds: 15, hearts: 3, style: '深蓝夜空、暖黄星星、绿色角色、红色三角；使用内置图形', prompt: '由工作台原生工坊在本次尝试的新目录中创建批准的 15 秒、3 颗心 collector 游戏，返回实际快照证据。' },
+  'prototype-playtest': { seconds: 20, prompt: '使用 seconds=20，按工程实际规则自动试玩；不传 rules 覆盖，不使用 characters-only。原样保存工具 summary，工具没有证实的字段标记未评估，不能自行填 true 或 0。' },
+  revise: { prompt: '保留《星光采集》的 15 秒和 3 颗心规则。先读取同一项目，再依据真实报告修订；没有可复现缺陷时记录无需修改原因。保留输入的项目路径、标题与当前 buildId，供后续构建使用。禁止通过削弱胜负或碰撞规则使试玩通过。' },
+  'final-playtest': { seconds: 20, prompt: '使用 seconds=20，对最终构建按实际规则自动试玩；不传 rules 覆盖，不使用 characters-only。原样保存 summary，工具没有证实的字段标记未评估，不能把失败、重开和键盘/触屏全部算作已自动覆盖。' },
+  package: { prompt: '由宿主核对最终构建和真实试玩证据后，精确导出相同 buildId 的快照，不重新构建。源码变化或证据不一致时停止交付。' },
+}
+
+const GAME_TEST_TEMPLATE: WorkflowGraph = {
+  ...GAME_PRODUCT_TEMPLATE,
+  name: '测试 · 星光采集 · 游戏完整闭环',
+  nodes: GAME_PRODUCT_TEMPLATE.nodes.flatMap((node, index) => [
+    { ...node, x: 40 + (index + (index > 6 ? 1 : 0) + (index > 9 ? 1 : 0)) * 260, config: { ...node.config, ...GAME_TEST_CONFIG[node.id] } },
+    ...(node.id === 'prototype-playtest' ? [{ id: 'prototype-context', type: 'flow.join', title: '汇总原型与试玩证据', x: 1860, y: 200, config: { policy: '全部命中', order: '按端口' } }] : []),
+    ...(node.id === 'final-playtest' ? [{ id: 'final-context', type: 'flow.join', title: '汇总最终构建与试玩', x: 2900, y: 200, config: { policy: '全部命中', order: '按端口' } }] : []),
+  ]),
+  edges: [
+    ...GAME_PRODUCT_TEMPLATE.edges.filter(edge => edge.to.node !== 'revise' && edge.to.node !== 'package').map(edge => ({ from: { ...edge.from }, to: { ...edge.to } })),
+    { from: { node: 'create', port: 'out' }, to: { node: 'prototype-context', port: 'a' } },
+    { from: { node: 'prototype-playtest', port: 'out' }, to: { node: 'prototype-context', port: 'b' } },
+    { from: { node: 'prototype-context', port: 'out' }, to: { node: 'revise', port: 'in' } },
+    { from: { node: 'build', port: 'out' }, to: { node: 'final-context', port: 'a' } },
+    { from: { node: 'final-playtest', port: 'out' }, to: { node: 'final-context', port: 'b' } },
+    { from: { node: 'final-context', port: 'out' }, to: { node: 'package', port: 'in' } },
+  ],
+}
+
 const CANVAS_DELIVERY_TEMPLATE = buildTemplate('game', '工作台 · 画布开发与集中验收', [
   { id: 'brief', type: 'input.brief', title: '目标与实施范围', x: 40, y: 200, config: { text: '完成 D:/AI/dsh-workbench/docs/workflow-v1/07-画布产品化补充计划.md 中的当前剩余工作：完整 DAG 运行、持续执行和恢复、画布完整性，然后集中验收桌面画布、分支汇合、人工审核、真实模型、产品包边界、HTTP 与真实数据。以实际源码与现有工作区状态为准，保留已有改动。工作流节点只生成文档；代码修改、命令和桌面操作由外部执行并回填证据。' } },
   { id: 'plan', type: 'dsh.generate', title: '拆分实施任务', x: 310, y: 200, config: { prompt: '根据输入制定可执行的实施任务清单。覆盖通用多输出契约、节点级执行、运行详情、分组/注释/折叠、服务端草稿与版本迁移，以及真实会话、桌面和数据集中验收。每项写范围、依赖、验收方法和风险；区分现有依据与待核查事项，不假定读过仓库或声称已经完成。保留用户已有改动。' } },
@@ -131,6 +174,7 @@ export interface TemplateInfo { id: string; name: string; line: ProductLineId; s
 export const templates: { id: string; line: ProductLineId; summary: string; graph: WorkflowGraph }[] = [
   { id: 'game-gdd-to-playtest', line: 'game', summary: '需求 → 设计稿 → 规则 JSON → 校验 → 人工确认 → 文件导出', graph: GAME_TEMPLATE },
   { id: 'game-product-closed-loop', line: 'game', summary: '需求 → 玩法批准 → 可玩原型 → 自动试玩修订 → 最终构建与试玩 → 离线 HTML → 人工验收', graph: GAME_PRODUCT_TEMPLATE },
+  { id: 'game-starlight-test', line: 'game', summary: '预填《星光采集》15 秒单关卡需求；20 秒自动试玩、两次人工关卡，同时记录游戏与画布问题', graph: GAME_TEST_TEMPLATE },
   { id: 'workbench-canvas-delivery', line: 'game', summary: '画布任务拆解 → 人工实施记录 → 集中验收 → 证据回填 → 报告导出；不自动改代码或运行测试', graph: CANVAS_DELIVERY_TEMPLATE },
   { id: 'novel-bible-to-chapter', line: 'novel', summary: '需求 → 设定集 → 人物 + 大纲 → 章节 → 文风校验 → 导出', graph: NOVEL_TEMPLATE },
   { id: 'drama-story-to-deliver', line: 'drama', summary: '需求 → 故事核 → 分镜脚本 → 分镜表 + 配音 → 角色一致 → 交付包', graph: DRAMA_TEMPLATE },

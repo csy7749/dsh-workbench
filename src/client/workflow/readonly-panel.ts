@@ -198,7 +198,7 @@ function mountSidebarEntry(ctx: ClientContext): SidebarController {
       icon.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16"></path><path d="M4 12h10"></path><path d="M4 18h7"></path></svg>'
       const label = document.createElement('span')
       label.className = 'dsh-workbench-entry-label'
-      label.textContent = '工作流'
+      label.textContent = '工作流（只读）'
       entry.appendChild(icon)
       entry.appendChild(label)
       entry.addEventListener('click', (event) => {
@@ -207,7 +207,7 @@ function mountSidebarEntry(ctx: ClientContext): SidebarController {
         try { ctx.layout?.selectPanel(WORKFLOW_READONLY_PANEL_KEY) } catch (cause) { console.warn('[dsh-workflow] 打开只读页失败：', String(cause)) }
       })
     }
-    const anchor = document.querySelector('[data-dsh-workbench-entry], [data-dsh-plugin="dsh-cron"][data-dsh-part="sidebar-entry"]') ?? target
+    const anchor = document.querySelector('[data-dsh-workbench-entry]') ?? document.querySelector('[data-dsh-plugin="dsh-cron"][data-dsh-part="sidebar-entry"]') ?? target
     if (entry.previousElementSibling !== anchor) anchor.insertAdjacentElement('afterend', entry)
   }
   const observer = new MutationObserver(place)

@@ -10,6 +10,10 @@ import { createIdeaView, type IdeaViewHandle } from './idea'
 import { createUiDesignView, type UiDesignViewHandle } from './ui-design'
 import { createDemoView, type DemoViewHandle } from './demo'
 import { mountCanvasInto } from './workflow/canvas-panel'
+import { workflowRunMonitor } from './workflow/run-monitor.ts'
+import { renderRunHub, RUN_HUB_CSS, type RunHubFilter } from './workflow/run-hub.ts'
+import { WORKFLOW_NAVIGATION_EVENT, takeWorkflowNavigation } from './workflow/run-navigation.ts'
+import { isActiveRun, runCounts, type WorkflowRunSummary } from '../shared/workflow-run-summary.ts'
 import { createAgentPanel } from './agent-panel'
 import { createAgentChat, teamStateOf, type ChatHandle } from './agent-chat'
 import {
@@ -187,7 +191,7 @@ interface DB { spaces: Space[]; tasks: Task[]; focus: FocusSession[]; settings: 
 interface Health { ok: boolean; engine: string; file: string; sqlite?: string; revision: number; tasks: number; spaces: number; focus: number }
 
 interface Ui {
-  view: 'portal' | 'board' | 'list' | 'timeline' | 'matrix' | 'flow' | 'calendar' | 'focus' | 'stats' | 'news' | 'notes' | 'bugs' | 'product' | 'ui' | 'demo' | 'test' | 'idea' | 'assets' | 'wftpl'
+  view: 'portal' | 'board' | 'list' | 'timeline' | 'matrix' | 'flow' | 'calendar' | 'focus' | 'stats' | 'news' | 'notes' | 'bugs' | 'product' | 'ui' | 'demo' | 'test' | 'idea' | 'assets' | 'wftpl' | 'workflows' | 'wfrun'
   /** 当前项目范围：'all' 全部 / 'none' 未归属 / 其余为 DSH 工作区绝对路径。 */
   project: string
   scope: 'today' | 'all'
@@ -363,7 +367,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   hostEl.style.display = 'block'
   hostEl.style.height = '100%'
   hostEl.style.minHeight = '0'
-  shadow.innerHTML = `<style>${WORKBENCH_CSS}</style>${SHELL}`
+  shadow.innerHTML = `<style>${WORKBENCH_CSS}${RUN_HUB_CSS}</style>${SHELL}`
 
   const $id = <T extends HTMLElement = HTMLElement>(id: string): T | null => shadow.getElementById(id) as T | null
   const agentPanel = createAgentPanel({
@@ -382,6 +386,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   let db: DB = { spaces: [], tasks: [], focus: [], settings: {} }
   let revision = 0
   let loaded = false
+  let workbenchDisposed = false
   let loadError = ''
   let saveTimer = 0
   let saveState: 'saved' | 'saving' | 'error' = 'saved'
@@ -677,6 +682,42 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     notesQ: '', notesFilter: 'all', noteMode: 'edit',
   }
   const timer: Timer = { preset: 25, running: false, remaining: 25 * 60, endsAt: 0, taskId: null }
+  let workflowRunTarget: WorkflowRunSummary | null = null
+  let workflowFilter: RunHubFilter = 'active'
+  let workflowFilterManual = false
+  let workflowCurrentProject = false
+
+  function openWorkflowRun(run: WorkflowRunSummary): void {
+    disposeFlowCanvas()
+    if (ui.view === 'notes') void flushNoteSave()
+    workflowRunTarget = run
+    ui.view = 'wfrun'
+    renderAll()
+  }
+  function onWorkflowNavigation(): void {
+    if (!loaded || workbenchDisposed) return
+    const destination = takeWorkflowNavigation()
+    if (!destination) return
+    if (destination.view === 'run') openWorkflowRun(destination.run)
+    else openFeature(destination.view)
+  }
+  /** Refresh just the read-only summary container, never the canvas or an active editor. */
+  function updateWorkflowSummary(): void {
+    const count = $id('wb-sidebar')?.querySelector('[data-view="workflows"] .n')
+    if (count) count.textContent = String(runCounts(workflowRunMonitor.snapshot().runs).attention)
+    const target = $id('wb-workflow-summary')
+    if (!target) return
+    const snapshot = workflowRunMonitor.snapshot()
+    if (ui.view === 'workflows' && !workflowFilterManual && snapshot.loaded) workflowFilter = snapshot.runs.some(run => isActiveRun(run) || run.needsAttention) ? 'active' : 'history'
+    const focused = shadow.activeElement as HTMLElement | null
+    const focusAttribute = ['data-wf-filter', 'data-wf-current', 'data-wf-open', 'data-wf-refresh', 'data-wf-hub', 'data-wf-templates'].find(attribute => focused?.hasAttribute(attribute))
+    const focusValue = focusAttribute ? focused?.getAttribute(focusAttribute) : undefined
+    target.innerHTML = renderRunHub(snapshot, {
+      compact: ui.view === 'portal', filter: workflowFilter,
+      project: workflowCurrentProject && !['all', 'none'].includes(ui.project) ? ui.project : undefined,
+    })
+    if (focusAttribute) Array.from(target.querySelectorAll<HTMLElement>(`[${focusAttribute}]`)).find(el => el.getAttribute(focusAttribute) === focusValue)?.focus({ preventScroll: true })
+  }
 
   /* ---------- 派生 ---------- */
   const spaceOf = (id: string): Space => db.spaces.find(s => s.id === id) ?? { id, name: id || '未分组', color: '#8a8a94' }
@@ -848,6 +889,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (ui.view === 'portal' || ui.view === 'bugs' || ui.view === 'test') renderAll()
   }
   function openFeature(view: Ui['view']): void {
+    if (view === 'workflows') workflowFilterManual = false
     const card = projectByPath(ui.project)
     if (view === 'product' && card?.product !== undefined) productSelected = card.product.id
     if (view === 'test' && card?.tests[0] !== undefined) testProjectSelected = card.tests[0].id
@@ -863,6 +905,11 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (view === 'notes') void loadNotes()
     if (view === 'bugs' && bugs.length === 0) void loadBugs()
     if (view === 'product' && products.length === 0) void loadProducts()
+    if (view === 'workflows' && products.length === 0) void loadProducts(true).then(() => {
+      if (workbenchDisposed || ui.view !== 'workflows') return
+      restoreProject()
+      renderAll()
+    })
     if (view === 'test' && testProjects.length === 0) void loadTests()
   }
   function openPortal(): void {
@@ -969,7 +1016,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       app.classList.toggle('collapsed', ui.collapsed)
       app.classList.toggle('compact', ui.compact)
       app.classList.toggle('focus-expand', ui.view === 'focus' && ui.focusExpand)
-      app.classList.toggle('no-detail', ['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl'].includes(ui.view))
+      app.classList.toggle('no-detail', ['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl', 'workflows', 'wfrun'].includes(ui.view))
     }
     renderSidebar()
     renderTopbar()
@@ -991,6 +1038,11 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
         items +
         sideItem('未归属', { icon: 'inbox', act: 'portal-project', id: 'none', n: projectTaskCount('none'), active: ui.project === 'none' }) +
         sideItem('新建项目 / 产品', { icon: 'plus', act: 'portal-new' }))
+    } else if (ui.view === 'workflows' || ui.view === 'wfrun') {
+      context = sideGroup('工作流', null,
+        '<div class="side-sub" style="padding:3px 8px 6px">跨项目查看运行、人工审核与异常</div>' +
+        sideItem('运行概览', { icon: 'flow', view: 'workflows', active: ui.view === 'workflows' }) +
+        sideItem('工作流模板', { icon: 'layers', view: 'wftpl' }))
     } else if (ui.view === 'calendar') {
       context = sideGroup('计划', null,
         '<div class="side-sub" style="padding:3px 8px 6px">安排时间与节奏</div>' +
@@ -1068,6 +1120,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       </div>
       <div class="side-home${ui.view === 'portal' ? ' active' : ''}">
         <div class="side-item${ui.view === 'portal' ? ' active' : ''}" data-act="portal-home">${ic('home', 15)}<span>门户</span></div>
+        ${sideItem('工作流', { icon: 'flow', view: 'workflows', active: ui.view === 'workflows' || ui.view === 'wfrun', n: runCounts(workflowRunMonitor.snapshot().runs).attention })}
       </div>
       <div class="side-scroll">${context}
         <div class="side-sec">
@@ -1101,6 +1154,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   function openCommandPalette(): void {
     const commands = [
       { id: 'portal', label: '项目门户', hint: '选项目 / 进功能', icon: 'home', view: 'portal' },
+      { id: 'workflows', label: '工作流', hint: '跨项目运行 / 待处理', icon: 'flow', view: 'workflows' },
       { id: 'board', label: '看板', hint: '任务视图', icon: 'board', view: 'board' },
       { id: 'list', label: '行动清单', hint: '任务视图', icon: 'list', view: 'list' },
       { id: 'timeline', label: '时间轴', hint: '计划视图', icon: 'clock', view: 'timeline' },
@@ -1170,8 +1224,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   /* ---------- 内容 ---------- */
   const FILTER_LABEL: Record<Ui['filter'], string> = { all: '筛选', high: '高优先级', sub: '有子待办', attach: '有附件', unscheduled: '未排时间' }
   const SORT_LABEL: Record<Ui['sort'], string> = { time: '按时间', priority: '按优先级', created: '按创建', title: '按标题' }
-  const MODULE_OF: Record<Ui['view'], string> = { portal: '工作台', board: '任务', list: '任务', timeline: '计划', matrix: '任务', calendar: '计划', focus: '专注', stats: '统计', news: '新闻', notes: '记事本', bugs: 'Bug 管理', product: '产品设计', ui: 'UI 设计', demo: 'DEMO', test: '测试', idea: '研发', assets: '研发', flow: '研发', wftpl: '研发' }
-  const NAME_OF: Record<Ui['view'], string> = { portal: '项目门户', board: '看板', list: '行动清单', timeline: '时间轴', matrix: '四象限', flow: '流程', calendar: '日历', focus: '当前专注', stats: '数据复盘', news: '新闻检索', notes: '笔记', bugs: '质量管理', product: '产品', test: '测试', idea: '灵感', assets: 'Unity 资产库', ui: 'UI 设计', demo: 'DEMO', wftpl: '工作流模板' }
+  const MODULE_OF: Record<Ui['view'], string> = { portal: '工作台', board: '任务', list: '任务', timeline: '计划', matrix: '任务', calendar: '计划', focus: '专注', stats: '统计', news: '新闻', notes: '记事本', bugs: 'Bug 管理', product: '产品设计', ui: 'UI 设计', demo: 'DEMO', test: '测试', idea: '研发', assets: '研发', flow: '研发', wftpl: '研发', workflows: '工作流', wfrun: '工作流' }
+  const NAME_OF: Record<Ui['view'], string> = { portal: '项目门户', board: '看板', list: '行动清单', timeline: '时间轴', matrix: '四象限', flow: '流程', calendar: '日历', focus: '当前专注', stats: '数据复盘', news: '新闻检索', notes: '笔记', bugs: '质量管理', product: '产品', test: '测试', idea: '灵感', assets: 'Unity 资产库', ui: 'UI 设计', demo: 'DEMO', wftpl: '工作流模板', workflows: '运行概览', wfrun: '运行详情' }
 
   function renderContent(): void {
     if (ui.view === 'idea') { syncIdeaView(); return }
@@ -1186,6 +1240,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     }
     let html = ''
     if (ui.view === 'portal') html = renderPortal()
+    else if (ui.view === 'workflows') html = `<div class="view-head"><div><div class="eyebrow">跨项目执行</div><h1 class="page-title">工作流</h1><div class="page-sub">查看运行、处理审核与异常，进入对应的任务和产物</div></div></div><div id="wb-workflow-summary"></div>`
+    else if (ui.view === 'wfrun') html = `<div class="view-head"><div><div class="eyebrow">工作流运行</div><h1 class="page-title">${esc(workflowRunTarget?.graphName ?? '运行详情')}</h1><div class="page-sub">${esc(workflowRunTarget?.productName ?? '')} · 查看本次冻结运行</div></div><button class="btn" data-wf-hub>返回工作流</button></div><div id="wb-flow-run-host" class="wf-host"></div>`
     else if (ui.view === 'board') html = renderBoard()
     else if (ui.view === 'list') html = renderList()
     else if (ui.view === 'timeline') html = renderTimeline()
@@ -1203,9 +1259,10 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     else if (ui.view === 'test') html = renderTests()
     else html = renderStats()
     /* 流程视图要占满内容区（画布自己有滚动与缩放），进出时切 class。 */
-    $id('wb-app')?.classList.toggle('flow-mode', ui.view === 'flow' || ui.view === 'wftpl')
-    const preserveFlowHost = (ui.view === 'flow' || ui.view === 'wftpl') && flowCanvasHost?.isConnected ? flowCanvasHost : null
-    if (ui.view !== 'flow' && ui.view !== 'wftpl') disposeFlowCanvas()
+    $id('wb-app')?.classList.toggle('flow-mode', ui.view === 'flow' || ui.view === 'wftpl' || ui.view === 'wfrun')
+    const flowHostId = ui.view === 'flow' ? 'wb-flow-host' : ui.view === 'wftpl' ? 'wb-flow-template-host' : ui.view === 'wfrun' ? 'wb-flow-run-host' : ''
+    const preserveFlowHost = flowCanvasHost?.isConnected && flowCanvasHost.id === flowHostId ? flowCanvasHost : null
+    if (!preserveFlowHost) disposeFlowCanvas()
     el.innerHTML = html
     if (preserveFlowHost) {
       const replacement = $id(preserveFlowHost.id)
@@ -1237,6 +1294,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       select?.addEventListener('change', () => { productSelected = select.value; disposeFlowCanvas(); renderContent() })
     }
     if (ui.view === 'wftpl') mountFlowCanvas('wb-flow-template-host', '')
+    if (ui.view === 'wfrun' && workflowRunTarget) mountFlowCanvas('wb-flow-run-host', workflowRunTarget.workspacePath, workflowRunTarget.productId, workflowRunTarget)
+    if (ui.view === 'portal' || ui.view === 'workflows') updateWorkflowSummary()
     if (ui.view === 'test') bindTests()
     if (ui.view === 'ui') ensureUiDesignView()
     if (ui.view === 'demo') ensureDemoView()
@@ -1281,22 +1340,33 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
 
   let flowCanvasDispose: (() => void) | null = null
   let flowCanvasHost: HTMLElement | null = null
+  let flowCanvasScope = ''
 
   /** 视图切换会重建 #wb-generic 的 innerHTML，旧 React root 必须显式卸载，否则重复挂载会报容器已占用。 */
   function disposeFlowCanvas(): void {
     if (flowCanvasDispose !== null) { try { flowCanvasDispose() } catch { /* 宿主已移除，忽略 */ } }
     flowCanvasDispose = null
     flowCanvasHost = null
+    flowCanvasScope = ''
   }
 
-  function mountFlowCanvas(hostId: string, productPath: string, productId = ''): void {
+  function mountFlowCanvas(hostId: string, productPath: string, productId = '', targetRun?: WorkflowRunSummary): void {
     const host = $id(hostId)
     if (host === null) return
-    if (flowCanvasHost === host && host.childElementCount > 0) return
+    const scope = JSON.stringify([productPath, productId, targetRun?.runId ?? ''])
+    if (flowCanvasHost === host && flowCanvasScope === scope && host.childElementCount > 0) return
     disposeFlowCanvas()
     flowCanvasHost = host
+    flowCanvasScope = scope
     try {
-      flowCanvasDispose = mountCanvasInto(host, { productPath, productId, createSession: () => createSessionIn(productPath), sendSession: sendToSession, openSession: focusSession })
+      const createSession = targetRun ? (productPath ? async () => {
+        await workflowRunMonitor.refresh()
+        const state = workflowRunMonitor.snapshot()
+        const current = state.runs.find(run => run.runId === targetRun.runId)
+        if (state.error || !current?.workspacePath || current.productId !== productId) throw new Error('无法确认本次运行的产品工作区，请返回工作流刷新后重试。')
+        return createSessionIn(current.workspacePath)
+      } : undefined) : () => createSessionIn(productPath)
+      flowCanvasDispose = mountCanvasInto(host, { productPath, productId, initialRunId: targetRun?.runId, initialNodeId: targetRun?.currentNodeId ?? undefined, createSession, sendSession: sendToSession, openSession: focusSession })
     } catch (cause) {
       flowCanvasDispose = null
       flowCanvasHost = null
@@ -1649,6 +1719,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
         <button class="btn" data-act="portal-load" title="重新读取项目 / Bug / 测试">${ic('refresh', 13)}刷新</button>
         <button class="btn-primary" data-act="portal-new">${ic('plus', 14)}新建项目 / 产品</button></div>
     </div>
+    <div id="wb-workflow-summary"></div>
     <div class="portal-sec-head"><h2>项目 / 产品</h2><span>${cards.length} 个项目 · 卡片内可编辑、删除</span></div>
     <div class="portal-projects">${cardAll}${cardProjects}${cardNone}</div>
     ${cards.length === 0 ? `<div class="portal-empty">${ic('layers', 16)}<div><b>还没有项目</b><span>新建一个项目 / 产品并关联 DSH 工作区，任务、Bug、测试、笔记就会按项目归拢。</span></div><button class="btn" data-act="portal-new">${ic('plus', 12)}新建</button></div>` : ''}
@@ -7967,7 +8038,7 @@ ${lines}`
   function renderDetail(): void {
     const el = detail()
     if (!el) return
-    const show = !['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl'].includes(ui.view)
+    const show = !['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl', 'workflows', 'wfrun'].includes(ui.view)
     el.classList.toggle('hide', !show)
     if (!show) { el.innerHTML = ''; return }
     const t = selectedTask()
@@ -8542,6 +8613,25 @@ ${lines}`
   function onClick(event: MouseEvent): void {
     const target = event.target as Element | null
     if (!target) return
+    const workflowOpen = target.closest('[data-wf-open]')
+    if (workflowOpen) {
+      const run = workflowRunMonitor.snapshot().runs.find(item => item.runId === workflowOpen.getAttribute('data-wf-open'))
+      if (run) openWorkflowRun(run)
+      else toast('这条运行已不在摘要中，请刷新后重试')
+      return
+    }
+    if (target.closest('[data-wf-hub]')) { openFeature('workflows'); return }
+    if (target.closest('[data-wf-templates]')) { openFeature('wftpl'); return }
+    if (target.closest('[data-wf-refresh]')) { void workflowRunMonitor.refresh(); return }
+    const workflowFilterEl = target.closest('[data-wf-filter]')
+    if (workflowFilterEl) { workflowFilterManual = true; workflowFilter = workflowFilterEl.getAttribute('data-wf-filter') as RunHubFilter; updateWorkflowSummary(); return }
+    const currentProjectEl = target.closest<HTMLInputElement>('[data-wf-current]')
+    if (currentProjectEl) {
+      if (['all', 'none'].includes(ui.project)) { currentProjectEl.checked = false; toast('请先选择一个具体项目'); return }
+      workflowCurrentProject = currentProjectEl.checked
+      updateWorkflowSummary()
+      return
+    }
     if (ctxMenuOpen && target.closest('#wb-ctxmenu') === null) closeContextMenu()
     const actEl = target.closest('[data-act]')
     if (actEl) {
@@ -9220,6 +9310,7 @@ ${lines}`
       const res = await fetch(`${API}/state`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json() as { revision: number } & DB
+      if (workbenchDisposed) return
       applyRemote(data)
       ui.compact = db.settings.compact === true
       initSideWidth()
@@ -9248,6 +9339,7 @@ ${lines}`
       if (ui.selected === null) ui.selected = chooseSelection()
       if (timer.taskId === null) timer.taskId = chooseSelection()
       loaded = true
+      onWorkflowNavigation()
       renderAll()
       void agentPanel.load().then(() => { if (ui.view === 'portal') renderAll() })
       if (ui.view === 'portal') void refreshPortal()
@@ -9271,6 +9363,11 @@ ${lines}`
   shadow.addEventListener('contextmenu', contextListener)
   shadow.addEventListener('scroll', closeContextMenu, true)
   window.addEventListener('visibilitychange', onVisibility)
+  window.addEventListener(WORKFLOW_NAVIGATION_EVENT, onWorkflowNavigation)
+  const unsubscribeWorkflow = workflowRunMonitor.subscribe(() => {
+    if (!loaded) return
+    updateWorkflowSummary()
+  })
 
   /*
    * 侧栏宽度拖拽：在把手上按下后把 pointermove/pointerup 挂到 window，
@@ -9391,6 +9488,9 @@ ${lines}`
 
   return {
     destroy(): void {
+      workbenchDisposed = true
+      unsubscribeWorkflow()
+      window.removeEventListener(WORKFLOW_NAVIGATION_EVENT, onWorkflowNavigation)
       disposeFlowCanvas()
       try { ideaView?.destroy() } catch (cause) { console.warn('[dsh-workbench] 灵感视图卸载失败', cause) }
       ideaView = null

@@ -40,7 +40,7 @@ const capDenied = resolveTool('bash', capOff)
 check('能力组关闭后拒绝（code=disabled_by_capability）', capDenied.code === 'disabled_by_capability', JSON.stringify(capDenied))
 check('能力组关闭也挡住同组其它工具', resolveTool('pwsh', capOff).allowed === false)
 
-for (const [name, profile] of [['bash', 'read-only'], ['write', 'read-only'], ['web_fetch', 'read-only'], ['workbench_ui_doc_publish', 'test'], ['workbench_testcase_publish', 'read-only']]) {
+for (const [name, profile] of [['bash', 'read-only'], ['write', 'read-only'], ['web_fetch', 'read-only'], ['workbench_ui_doc_publish', 'test'], ['workbench_testcase_publish', 'read-only'], ['workbench_game_create', 'read-only'], ['workbench_game_export', 'read-only'], ['workbench_game_playtest', 'design']]) {
   const decision = resolveTool(name, DEFAULT_TOOL_POLICY, profile)
   check(`${profile} 档拒绝 ${name}`, decision.allowed === false && decision.code === 'not_in_profile', JSON.stringify(decision))
 }

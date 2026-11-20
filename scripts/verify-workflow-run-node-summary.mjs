@@ -3,6 +3,12 @@ import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import ts from 'typescript'
 import { groupRunNodes } from '../src/client/workflow/run-node-summary.ts'
+import { artifactPreviewFormat } from '../src/shared/workflow-artifact-format.ts'
+
+assert.equal(artifactPreviewFormat('# GDD', { nodeType: 'game.gdd', artifactKind: 'markdown' }), 'markdown')
+assert.equal(artifactPreviewFormat('{"buildId":"b1"}', { nodeType: 'game.package', artifactKind: 'json' }), 'json')
+assert.equal(artifactPreviewFormat('{bad', { nodeType: 'check.rules', artifactKind: 'markdown' }), 'json', 'invalid JSON remains in JSON preview with a raw fallback')
+assert.equal(artifactPreviewFormat('plain input', { nodeType: 'input.brief' }), 'text')
 
 const step = (nodeId, sourceAttemptId = null) => ({
   stepId: 'step:' + nodeId, nodeId, sourceAttemptId, title: 'Same task name',
@@ -65,20 +71,25 @@ assert.equal(unknown.unassigned.length, 1, 'unknown ownership must not be guesse
 
 // Exercise the actual run drawer with lightweight elements; no DSH/model calls.
 const source = readFileSync(new URL('../src/client/workflow/canvas-panel.tsx', import.meta.url), 'utf8')
+const viewer = source.slice(source.indexOf('function artifactEsc'), source.indexOf('\nexport function CanvasPanel'))
 const drawer = source.slice(source.indexOf('  const runDrawer ='), source.indexOf("\n  return h('div', { className: 'wf dsh-wf-root'"))
 assert(drawer.includes('groupRunNodes(run)'), 'render the production drawer, not copied markup')
-const compiled = ts.transpileModule('(() => {\n' + drawer + '\nreturn runDrawer()\n})()', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+const compiled = ts.transpileModule(viewer + '\n(() => {\n' + drawer + '\nreturn { tree: runDrawer(), viewer: ArtifactViewer, markdown: markdownPreviewHtml }\n})()', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
 let expanded = {}
 const opened = []
 const h = (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat(Infinity).filter(child => child !== null && child !== undefined && child !== false) })
+const { nativeGameLinks } = await import('../src/shared/native-game-links.ts')
 const globals = {
+  nativeGameLinks,
   run: { ...run, runId: 'test', status: 'completed', validations: [], events: [] },
   runDetailsOpen: true, displayMode: 'progress', runBusy: false, groupRunNodes, h,
+  useState: value => [value, () => {}],
   props: { openSession: id => opened.push(id) }, expandedRunNodes: expanded,
   setExpandedRunNodes: update => { expanded = update(expanded); globals.expandedRunNodes = expanded },
   RUN_STATUS: { completed: 'complete' }, STEP_STATUS: { succeeded: 'done' },
 }
-const render = () => vm.runInNewContext(compiled, globals)
+const evaluate = () => vm.runInNewContext(compiled, globals)
+const render = () => evaluate().tree
 const walk = node => node && typeof node === 'object' ? [node, ...node.children.flatMap(walk)] : []
 const text = node => typeof node === 'string' || typeof node === 'number' ? String(node) : node.children.map(text).join(' ')
 const byClass = (root, name) => walk(root).filter(node => node.props.className === name)
@@ -98,6 +109,17 @@ for (const card of cards.slice(0, 3)) {
 }
 assert.deepEqual(opened, ['session:a1', 'session:a2', 'session:a3', 'session:b1', 'revision-session:r1', 'revision-session:r2'])
 assert(walk(cards[0]).some(node => node.type === 'summary' && text(node) === '查看完整产物'))
+const api = evaluate()
+const markdown = api.viewer({ content: '# GDD\n\n| 名称 | 值 |\n| --- | --- |\n| 分数 | **10** |\n\n```js\nalert(1)\n```', format: 'markdown' })
+assert.match(markdown.children[1].props.dangerouslySetInnerHTML.__html, /<table>/)
+assert.match(markdown.children[1].props.dangerouslySetInnerHTML.__html, /<strong>10<\/strong>/)
+assert.match(markdown.children[1].props.dangerouslySetInnerHTML.__html, /<pre><code>alert\(1\)<\/code><\/pre>/)
+assert.match(api.markdown('# <img src=x onerror=alert(1)>'), /&lt;img/)
+const json = api.viewer({ content: '{"buildId":"b1"}', format: 'json' })
+assert.equal(json.children[1].children[0], '{\n  "buildId": "b1"\n}')
+const malformed = api.viewer({ content: '{bad', format: 'json' })
+assert.equal(malformed.children[1].children[0], 'JSON 无法解析，已保留原文供检查。')
+assert.equal(malformed.children[2].children[0], '{bad')
 walk(tree).find(node => node.type === 'button' && text(node) === '收起全部').props.onClick()
 assert.equal(byClass(render(), 'wf-run-node-body').length, 0)
 globals.expandedRunNodes = {}

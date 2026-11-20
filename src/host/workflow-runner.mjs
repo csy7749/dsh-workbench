@@ -1,4 +1,5 @@
 import { checks, ruleChecks, reviewedExports, reviewContracts, reviewContractFor } from '../packs/runtime.mjs'
+import { readNativeCollectorRules } from '../packs/game/validators.mjs'
 import { createCheckEvaluator } from '../workflow/check-registry.mjs'
 import { readGenerationResult } from '../workflow/session-result.mjs'
 import { createSessionRevisions } from './workflow-revisions.mjs'
@@ -16,6 +17,7 @@ import { openWorkflowKernel } from '../workflow/m1-kernel.mjs'
 import { createFakeBusinessService } from '../workflow/m1-fake-service.mjs'
 import { createDevelopmentTargetAdapter } from '../workflow/m1-development-target.mjs'
 import { defById, validateGraph, PACKS } from '../shared/workflow-catalog.ts'
+const NATIVE_GAME_TYPES = new Set(['game.create', 'game.playtest', 'game.revise', 'game.build', 'game.package'])
 
 const outputs = (editable, artifactType = 'markdown') => [{ name: 'content', artifactType, schemaVersion: 1, editable, multiplicity: 'one' }]
 const NON_EMPTY = ['content.non_empty']
@@ -29,6 +31,7 @@ export function classifyNode(type) {
   if (!def) return 'unknown'
   if (def.cat === 'input') return 'static'
   if (def.actor === 'human') return 'human'
+  if (def.executor === 'tool-service') return 'static'
   if (def.executor === 'dsh-session') return 'agent'
   if (def.cat === 'check' || def.cat === 'output' || def.cat === 'input' || type === 'flow.join') return 'static'
   return 'agent'
@@ -64,7 +67,9 @@ export function compileGraph(graph) {
     const ancestors = new Set()
     const trace = id => { for (const up of incoming.get(id) ?? []) { if (!ancestors.has(up)) { ancestors.add(up); trace(up) } } }
     trace(id)
-    const review = kind === 'human' ? reviewContracts.find(contract => [...ancestors].some(up => defById(byId.get(up).type)?.reviewKind === contract.kind)) : null
+    const review = kind === 'human' ? (def.reviewKind
+      ? reviewContracts.find(contract => contract.kind === def.reviewKind)
+      : reviewContracts.find(contract => [...ancestors].some(up => defById(byId.get(up).type)?.reviewKind === contract.kind))) : null
     if (review?.validateSources) review.validateSources([...ancestors].map(up => byId.get(up)).filter(Boolean))
     const step = {
       nodeId: id,
@@ -81,11 +86,11 @@ export function compileGraph(graph) {
       const sourceDef = defById(source?.type)
       if (sourceDef?.outputs.length > 1 && source.type !== 'check.rules') throw new Error('multi_output_unavailable:' + source.type)
     }
-    return { nodeId: id, type: node.type, title: node.title || def.title, kind, step, contract: { prompt: def.prompt, artifactKind: def.artifactKind, exportName: def.exportName, reviewKind: review?.kind }, executionConfig: resolveExecutionConfig(graph, id), upstream: (incoming.get(id) ?? []).filter(up => defById(byId.get(up).type)?.cat !== 'config') }
+    return { nodeId: id, type: node.type, title: node.title || def.title, kind, step, contract: { prompt: def.prompt, executionPrompt: def.executionPrompt, artifactKind: def.artifactKind, exportName: def.exportName, reviewKind: review?.kind }, executionConfig: resolveExecutionConfig(graph, id), upstream: (incoming.get(id) ?? []).filter(up => defById(byId.get(up).type)?.cat !== 'config') }
   })
 }
 
-export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) {
+export function createWorkflowRunner({ dbPath, root, productId = 'workbench', nativeGame = null }) {
   if (!dbPath || !root) throw new Error('runner_paths_required')
   const kernel = openWorkflowKernel(dbPath, root, { evaluateChecks: createCheckEvaluator(checks) })
   const service = createFakeBusinessService({ kernel, targetAdapter: createDevelopmentTargetAdapter({ kernel }) })
@@ -98,6 +103,19 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
   kernel.query('CREATE TABLE IF NOT EXISTS wf_generation_sessions(attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, session_id TEXT NOT NULL UNIQUE, token TEXT NOT NULL, prompt TEXT NOT NULL, after_seq INTEGER NOT NULL, evidence_json TEXT)')
   if (!kernel.query('PRAGMA table_info(wf_generation_sessions)').some(row => row.name === 'config_json')) kernel.query('ALTER TABLE wf_generation_sessions ADD COLUMN config_json TEXT')
   kernel.query("CREATE TABLE IF NOT EXISTS wf_auto_runs(run_id TEXT PRIMARY KEY,enabled INTEGER NOT NULL DEFAULT 1,state TEXT NOT NULL DEFAULT 'idle',session_id TEXT,reason TEXT,updated_at TEXT NOT NULL,owner TEXT,lease_until TEXT)")
+  kernel.query('CREATE TABLE IF NOT EXISTS wf_native_operations(attempt_id TEXT PRIMARY KEY,run_id TEXT NOT NULL,node_id TEXT NOT NULL,product_id TEXT NOT NULL,operation TEXT NOT NULL,status TEXT NOT NULL,request_json TEXT NOT NULL,result_json TEXT,error TEXT,created_at TEXT NOT NULL)')
+  const nativePending = new Map()
+  const advancing = new Set()
+  let disposed = false
+  // An interrupted host operation is never blindly replayed after restart.
+  for (const row of kernel.query("SELECT o.attempt_id,a.status,o.result_json FROM wf_native_operations o JOIN workflow_attempts a ON a.id=o.attempt_id WHERE o.status IN ('running','ready')")) {
+    if (row.status === 'succeeded' && row.result_json && kernel.one('SELECT id FROM workflow_snapshots WHERE source_attempt_id=?', row.attempt_id)) {
+      kernel.query("UPDATE wf_native_operations SET status='completed' WHERE attempt_id=?", row.attempt_id)
+    } else {
+      if (row.status === 'running') kernel.markUnknown(row.attempt_id, 'native_operation_outcome_unknown')
+      kernel.query("UPDATE wf_native_operations SET status='unknown',error='native_operation_outcome_unknown' WHERE attempt_id=?", row.attempt_id)
+    }
+  }
   const autoColumns = kernel.query('PRAGMA table_info(wf_auto_runs)').map(row => row.name)
   if (!autoColumns.includes('owner')) kernel.query('ALTER TABLE wf_auto_runs ADD COLUMN owner TEXT')
   if (!autoColumns.includes('lease_until')) kernel.query('ALTER TABLE wf_auto_runs ADD COLUMN lease_until TEXT')
@@ -202,10 +220,96 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
 
   const nextOpen = runId => stateOf(runId).steps.find(step => !['succeeded', 'cancelled', 'skipped'].includes(step.state)) ?? null
 
+  const ancestorsOf = (compiled, nodeId) => {
+    const ancestors = new Set()
+    const trace = id => { for (const up of compiled.find(node => node.nodeId === id)?.upstream ?? []) { if (!ancestors.has(up)) { ancestors.add(up); trace(up) } } }
+    trace(nodeId)
+    return ancestors
+  }
+  const nativeContext = (runId, item) => {
+    const compiled = compiledOf(runId)
+    const ancestors = ancestorsOf(compiled, item.nodeId)
+    const sources = []
+    const approved = []
+    for (const entry of compiled.filter(node => ancestors.has(node.nodeId))) {
+      if (entry.contract.reviewKind === 'game-review-v1' && entry.kind === 'human') {
+        const value = contentOf(runId, entry.nodeId)
+        if (value) approved.push(JSON.parse(value))
+      }
+      if (!NATIVE_GAME_TYPES.has(entry.type)) continue
+      const row = kernel.one("SELECT o.result_json FROM workflow_steps s JOIN workflow_adoptions a ON a.id=s.current_adoption_id JOIN workflow_snapshots p ON p.id=a.snapshot_id JOIN wf_native_operations o ON o.attempt_id=p.source_attempt_id WHERE s.run_id=? AND s.node_id=? AND s.stale=0 AND o.status='completed' AND o.run_id=s.run_id", runId, entry.nodeId)
+      if (!row) throw new Error('game_native_source_missing: 请从创建节点重跑，不能混用旧插件或手填的游戏证据')
+      sources.push({ nodeId: entry.nodeId, type: entry.type, result: JSON.parse(row.result_json) })
+    }
+    return { sources, approved }
+  }
+  const startNative = async (runId, item, compiled) => {
+    if (!nativeGame) throw new Error('capability_unavailable: native_game_service')
+    const productId = kernel.one('SELECT product_id FROM workflow_run_definitions WHERE run_id=?', runId).product_id
+    await nativeGame.preflight({ productId, nodes: compiled })
+    if (!['created', 'running'].includes(stateOf(runId).run.status)) return
+    const context = nativeContext(runId, item)
+    const claim = kernel.claim(runId, kernel.definitionFor(runId).input)
+    if (claim.kind !== 'automatic') throw new Error('native_claim_failed')
+    const request = { runId, nodeId: item.nodeId, attemptId: claim.attemptId, productId, type: item.type, config: item.node?.config ?? {}, ...context }
+    try { kernel.query('INSERT INTO wf_native_operations VALUES(?,?,?,?,?,?,?,NULL,NULL,?)', claim.attemptId, runId, item.nodeId, productId, item.type, 'running', JSON.stringify(request), new Date().toISOString()) }
+    catch (cause) { kernel.markFailed(claim.attemptId, 'native_journal_unavailable'); throw cause }
+    const controller = new AbortController()
+    const pending = { controller, attemptId: claim.attemptId, promise: null }
+    nativePending.set(runId, pending)
+    kernel.appendEvent(runId, 'native.started', { nodeId: item.nodeId, attemptId: claim.attemptId, operation: item.type })
+    const heartbeat = setInterval(() => {
+      try { kernel.heartbeatAttempt({ attemptId: claim.attemptId, token: claim.token }) }
+      catch { controller.abort() }
+    }, 10000)
+    heartbeat.unref?.()
+    pending.promise = (async () => {
+      let completed = false
+      let produced = false
+      try {
+        const result = await nativeGame.execute({ ...request, signal: controller.signal })
+        produced = true
+        if (controller.signal.aborted || !['created', 'running'].includes(stateOf(runId).run.status)) throw new Error('native_operation_cancelled')
+        const content = JSON.stringify({ ...result, nativeAttemptId: claim.attemptId, nativeRunId: runId }, null, 2)
+        kernel.query("UPDATE wf_native_operations SET result_json=?,status='ready' WHERE attempt_id=?", content, claim.attemptId)
+        const candidate = kernel.storeCandidate({ attemptId: claim.attemptId, token: claim.token, content, artifactType: item.step.outputs[0].artifactType })
+        const adoption = kernel.adopt({ attemptId: claim.attemptId, token: claim.token, candidate })
+        completed = adoption.status !== 'failed'
+        kernel.query('UPDATE wf_native_operations SET status=?,error=? WHERE attempt_id=?', completed ? 'completed' : 'failed', completed ? null : 'native_evidence_invalid', claim.attemptId)
+        kernel.appendEvent(runId, completed ? 'native.completed' : 'native.failed', { nodeId: item.nodeId, attemptId: claim.attemptId, buildId: result.buildId })
+      } catch (cause) {
+        const reason = String(cause?.code ?? cause?.message ?? cause).slice(0, 300)
+        if (!disposed) {
+          const unknown = produced && !controller.signal.aborted
+          kernel.query('UPDATE wf_native_operations SET status=?,error=? WHERE attempt_id=?', unknown ? 'unknown' : 'failed', reason, claim.attemptId)
+          if (kernel.one('SELECT status FROM workflow_attempts WHERE id=?', claim.attemptId)?.status === 'running') {
+            if (unknown) kernel.markUnknown(claim.attemptId, reason)
+            else kernel.markFailed(claim.attemptId, reason)
+          }
+          kernel.appendEvent(runId, 'native.failed', { nodeId: item.nodeId, attemptId: claim.attemptId, reason })
+        }
+      } finally {
+        clearInterval(heartbeat)
+        nativePending.delete(runId)
+        if (completed && !disposed) setImmediate(() => { void advance(runId).catch(cause => { try { kernel.pauseRun(runId, String(cause.message).slice(0, 300)) } catch {} }) })
+      }
+    })()
+    // Persistence itself may fail; keep the process alive for restart reconciliation.
+    void pending.promise.catch(cause => { try { kernel.pauseRun(runId, String(cause?.message ?? cause).slice(0, 300)) } catch {} })
+  }
   const advance = async runId => {
+    if (disposed) throw new Error('runner_disposed')
+    if (advancing.has(runId) || nativePending.has(runId)) return { status: 'running', done: false, waiting: { kind: 'running', nodeId: nextOpen(runId)?.node_id } }
+    advancing.add(runId)
+    try {
     const compiled = compiledOf(runId)
     for (let guard = 0; guard < 200; guard++) {
       const state = stateOf(runId)
+      if (state.run.status === 'waiting_review') {
+        const step = state.steps.find(step => step.state === 'waiting_review')
+        const task = state.tasks.find(task => task.step_id === step?.id && task.status === 'open')
+        return { status: 'waiting_human', done: false, waiting: { kind: 'human', nodeId: step?.node_id, taskId: task?.id ?? null, title: compiled.find(item => item.nodeId === step?.node_id)?.title } }
+      }
       if (!['created', 'running'].includes(state.run.status)) return { status: state.run.status, done: true, waiting: null }
       const open = state.steps.find(step => !['succeeded', 'cancelled', 'skipped'].includes(step.state))
       if (!open) return { status: state.run.status, done: true, waiting: null }
@@ -227,6 +331,11 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
         return { status: 'waiting_human', done: false, waiting: { kind: 'human', nodeId: open.node_id, taskId: task?.id ?? null, title: item.title } }
       }
       if (open.state === 'running') return { status: 'running', done: false, waiting: { kind: 'running', nodeId: open.node_id } }
+      if (NATIVE_GAME_TYPES.has(item.type)) {
+        try { await startNative(runId, item, compiled) }
+        catch (cause) { kernel.pauseRun(runId, String(cause?.message ?? cause).slice(0, 300)); return { status: 'paused', done: false, waiting: null } }
+        return { status: 'running', done: false, waiting: { kind: 'running', nodeId: open.node_id } }
+      }
       if (item.kind === 'agent') return { status: 'needs_agent', done: false, waiting: { kind: 'agent', nodeId: open.node_id, title: item.title, type: item.type } }
       if (item.kind === 'human') {
         const claim = kernel.claim(runId, kernel.definitionFor(runId).input)
@@ -242,6 +351,7 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
       finishStatic(runId, item)
     }
     throw new Error('run_step_limit')
+    } finally { advancing.delete(runId) }
   }
 
   return {
@@ -260,6 +370,28 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
     },
     listForGraph(graphId, owner = productId) {
       return kernel.query("SELECT g.run_id, g.created_at, r.status FROM wf_run_graphs g JOIN workflow_runs r ON r.id=g.run_id JOIN workflow_run_definitions d ON d.run_id=g.run_id WHERE json_extract(g.graph_json, '$.id')=? AND d.product_id=? ORDER BY g.created_at DESC, g.run_id DESC LIMIT 50", graphId, owner)
+    },
+    // Read only metadata and step states: never load artifacts, prompts, events or human drafts for the hub.
+    listSummaries() {
+      return kernel.query(`SELECT r.id AS runId, d.product_id AS productId,
+        json_extract(g.graph_json, '$.id') AS graphId, json_extract(g.graph_json, '$.name') AS graphName,
+        r.status, r.pause_reason AS pauseReason, r.created_at AS createdAt, r.updated_at AS updatedAt,
+        a.state AS autoState, a.reason AS autoReason,
+        (SELECT json_group_array(json_object('nodeId', s.node_id, 'state', s.state, 'stale', s.stale,
+          'title', COALESCE(json_extract(c.value, '$.title'), s.node_id)))
+         FROM workflow_steps s LEFT JOIN json_each(g.compiled_json) c ON json_extract(c.value, '$.nodeId')=s.node_id
+         WHERE s.run_id=r.id) AS stepsJson
+        FROM workflow_runs r JOIN wf_run_graphs g ON g.run_id=r.id
+        JOIN workflow_run_definitions d ON d.run_id=r.id LEFT JOIN wf_auto_runs a ON a.run_id=r.id
+        WHERE r.status NOT IN ('completed','cancelled') OR r.id IN
+          (SELECT id FROM workflow_runs WHERE status IN ('completed','cancelled') ORDER BY updated_at DESC, id DESC LIMIT 20)
+        ORDER BY r.updated_at DESC, r.id DESC`)
+    },
+    frozenGraph(runId) {
+      uiOf(runId)
+      const row = kernel.one('SELECT graph_json FROM wf_run_graphs WHERE run_id=?', runId)
+      if (!row) throw new Error('run_graph_missing')
+      return JSON.parse(row.graph_json)
     },
     advance,
     productId: runId => { uiOf(runId); return kernel.one('SELECT product_id FROM workflow_run_definitions WHERE run_id=?', runId).product_id },
@@ -347,11 +479,20 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
     failRevision(input) { return revisions.fail(input) },
     collectRevision(input) { return revisions.collect(input) },
     applyRevision(input) { return revisions.apply(input) },
-    compiled: runId => compiledOf(runId),
+    compiled: runId => compiledOf(runId).map(item => NATIVE_GAME_TYPES.has(item.type) ? { ...item, kind: 'static' } : item),
+    nativeOperations: runId => kernel.query('SELECT attempt_id,node_id,operation,status,error,result_json FROM wf_native_operations WHERE run_id=? ORDER BY rowid', runId),
+    abandonNative({ runId, attemptId, expectedRevision }) {
+      if (stateOf(runId).run.revision !== expectedRevision) throw new Error('cas_conflict')
+      const row = kernel.one("SELECT attempt_id FROM wf_native_operations WHERE run_id=? AND attempt_id=? AND status='unknown'", runId, attemptId)
+      if (!row || nativePending.has(runId)) throw new Error('native_attempt_not_abandonable')
+      kernel.abandonAttemptResult(attemptId)
+      kernel.query("UPDATE wf_native_operations SET status='abandoned' WHERE attempt_id=?", attemptId)
+    },
+    async dispose() { disposed = true; const pending = [...nativePending.values()]; for (const item of pending) item.controller.abort(); await Promise.allSettled(pending.map(item => item.promise)) },
     nextExecutionConfig(runId) {
       const open = nextOpen(runId)
       const item = compiledOf(runId).find(entry => entry.nodeId === open?.node_id)
-      if (item?.kind !== 'agent' || !['created', 'running'].includes(stateOf(runId).run.status) || open?.state === 'running') throw new Error('generation_node_required')
+      if (NATIVE_GAME_TYPES.has(item?.type) || item?.kind !== 'agent' || !['created', 'running'].includes(stateOf(runId).run.status) || open?.state === 'running') throw new Error('generation_node_required')
       return item.executionConfig
     },
     attempts(runId) {
@@ -366,16 +507,18 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
       if (existing) throw new Error('generation_session_already_bound')
       const open = nextOpen(runId)
       const item = compiledOf(runId).find(entry => entry.nodeId === open?.node_id)
-      if (item?.kind !== 'agent') throw new Error('generation_node_required')
+      if (NATIVE_GAME_TYPES.has(item?.type) || item?.kind !== 'agent') throw new Error('generation_node_required')
       if ((item.executionConfig?.providerId || item.executionConfig?.modelId) && (!effectiveConfig || (item.executionConfig.providerId && item.executionConfig.providerId !== effectiveConfig.providerId) || (item.executionConfig.modelId && item.executionConfig.modelId !== effectiveConfig.modelId))) throw new Error('session_model_mismatch')
       const claim = kernel.claim(runId, kernel.definitionFor(runId).input)
       if (claim.kind !== 'automatic') throw new Error('generation_claim_failed')
       const prompt = [
         'Workflow attempt: ' + claim.attemptId,
-        'Return only the requested deliverable. Do not modify files or send messages.',
+        item.contract?.executionPrompt ?? 'Return only the requested deliverable. Do not modify files or send messages.',
         'Role: ' + (item.executionConfig?.role || 'Follow the workflow task'),
         'Task: ' + item.title,
         item.contract?.prompt ?? '',
+        item.type === 'game.rules' && compiledOf(runId).some(node => node.type === 'game.create')
+          ? 'Native implementation contract: only canvas-collector@1 is implemented: one player moves horizontally with keyboard/touch, falling stars add score, falling triangles remove hearts, zero hearts loses, survive durationSeconds wins, restart resets. Include nativeTemplate="canvas-collector@1", durationSeconds (integer 3..60), hearts (integer 1..9) ONLY if the requested rules match this complete scope. Set creativePack="local-original-v1" to request the original local basic-shape SVG sprites and procedural WAV sounds; otherwise creativePack="none". Blender requires a separately available runtime and is not implied by this pack. Otherwise nativeTemplate="unsupported" and explain in openQuestions. The human will explicitly approve these rules before any project creation. Do not silently replace other game mechanics.' : '',
         'Deliverable instructions: ' + String(item.node.config.prompt ?? '').replaceAll('{{in}}', upstreamOf(runId, item.nodeId)),
         'Configuration: ' + JSON.stringify(item.node.config),
         'Output type: ' + item.step.outputs[0].artifactType,
@@ -401,6 +544,11 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
       const binding = kernel.one('SELECT * FROM wf_generation_sessions WHERE run_id=? AND session_id=?', runId, sessionId)
       if (!binding) throw new Error('generation_binding_missing')
       if (binding.evidence_json) return JSON.parse(binding.evidence_json)
+      const legacyNode = kernel.one('SELECT s.node_id,a.status FROM workflow_attempts a JOIN workflow_steps s ON s.id=a.step_id WHERE a.id=?', binding.attempt_id)
+      if (NATIVE_GAME_TYPES.has(compiledOf(runId).find(item => item.nodeId === legacyNode?.node_id)?.type)) {
+        if (legacyNode.status === 'running') kernel.markUnknown(binding.attempt_id, 'legacy_game_session_requires_abandonment')
+        return { status: 'unknown', reason: 'legacy_game_session_requires_abandonment' }
+      }
       const attempt = kernel.one('SELECT a.status,s.stale,r.status AS run_status FROM workflow_attempts a JOIN workflow_steps s ON s.id=a.step_id JOIN workflow_runs r ON r.id=s.run_id WHERE a.id=?', binding.attempt_id)
       if (!['running', 'unknown'].includes(attempt?.status) || attempt.stale || ['completed', 'cancelled', 'failed'].includes(attempt.run_status)) return { status: 'ignored', reason: 'attempt_no_longer_active' }
       if (attempt.status === 'unknown') {
@@ -436,7 +584,7 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
       const open = nextOpen(runId)
       if (!open) throw new Error('run_has_no_open_step')
       const item = compiledOf(runId).find(entry => entry.nodeId === open.node_id)
-      if (item?.kind !== 'agent') throw new Error('generation_node_required')
+      if (NATIVE_GAME_TYPES.has(item?.type) || item?.kind !== 'agent') throw new Error('generation_node_required')
       const claim = kernel.claim(runId, kernel.definitionFor(runId).input)
       if (claim.kind !== 'automatic') throw new Error('step_is_human')
       const candidate = kernel.storeCandidate({ attemptId: claim.attemptId, token: claim.token, content, artifactType: item.step.outputs[0].artifactType })
@@ -478,7 +626,9 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
       return service.rerunVersion({ principal: uiOf(runId), runId, stepId: step.id, expectedRunRevision, expectedStepRevision })
     },
     control(runId, command, expectedRevision) {
-      return service.commandRun({ principal: uiOf(runId), runId, command, expectedRevision, idempotencyKey: key() })
+      const result = service.commandRun({ principal: uiOf(runId), runId, command, expectedRevision, idempotencyKey: key() })
+      if (['pause', 'cancel'].includes(command)) nativePending.get(runId)?.controller.abort()
+      return result
     },
     async confirm({ runId, taskId, content, intent = 'continue', expectedBindingVersion, expectedTaskRevision, expectedRunRevision }) {
       const task = stateOf(runId).tasks.find(entry => entry.id === taskId)
@@ -487,12 +637,20 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench' }) 
       const taskRevision = expectedTaskRevision ?? task.task_revision ?? 1
       const runRevision = expectedRunRevision ?? stateOf(runId).run.revision
       if (stateOf(runId).run.revision !== runRevision) throw new Error('cas_conflict')
-      const item = compiledOf(runId).find(entry => entry.nodeId === stateOf(runId).steps.find(step => step.id === task.step_id)?.node_id)
+      const compiled = compiledOf(runId)
+      const item = compiled.find(entry => entry.nodeId === stateOf(runId).steps.find(step => step.id === task.step_id)?.node_id)
       const contract = reviewContractFor(item)
       if (contract) {
+        if (contract.validate) {
+          const error = contract.validate(content, compiled, item.nodeId, id => contentOf(runId, id))
+          if (error) throw new Error(error)
+        }
         const review = contract.parse(content)
-        const source = contract.sources(compiledOf(runId), item.nodeId)
-        if (review && review[contract.dependentSource] !== contentOf(runId, source[contract.dependentSource])) throw new Error('设计稿已修改：请先应用修改并重新生成下游内容，旧结果不能直接确认。')
+        const source = contract.sources(compiled, item.nodeId)
+        if (contract.dependentSource && review && review[contract.dependentSource] !== contentOf(runId, source[contract.dependentSource])) throw new Error('设计稿已修改：请先应用修改并重新生成下游内容，旧结果不能直接确认。')
+        if (review && contract.kind === 'game-review-v1' && compiled.some(node => node.type === 'game.create' && ancestorsOf(compiled, node.nodeId).has(item.nodeId))) {
+          readNativeCollectorRules(review.rules)
+        }
       }
       const report = service.validateHumanDraft({ principal: uiOf(runId), runId, taskId, content, expectedBindingVersion: bindingVersion, expectedTaskRevision: taskRevision })
       return service.confirmHumanTask({

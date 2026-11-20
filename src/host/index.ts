@@ -20,6 +20,13 @@ import { spawn } from 'node:child_process'
 import { createIdeaModule, buildIdeaPrompt } from './idea.js'
 import { createAgentModule, readSessionLog } from './agent.js'
 import { createWorkflowCanvasModule } from './workflow-canvas.js'
+import { registerNativeGameTools } from './native-game-tools.js'
+import { createNativeGameStudio } from './native-game-studio.mjs'
+import { createNativeGameHttp } from './native-game-http.js'
+import { createNativeGameManagement } from './native-game-management.js'
+import { createWorkflowNativeGame } from './workflow-native-game.mjs'
+import { resolveTool } from '../shared/tool-policy.js'
+export { createNativeGameStudio, nativeGameStudioContract } from './native-game-studio.mjs'
 import { createWorkflowSessionAdapter } from './workflow-session.mjs'
 import { createToolPolicyModule, registerGuardedTool } from './tool-policy.js'
 import { collectFromSources, NEWS_SOURCES } from './news-sources.js'
@@ -6741,6 +6748,14 @@ export function apply(ctx: any): void {
   }
 
   /* 工作流画布：与灵感同库不同表（wf_graphs）。无 SQLite 时禁用——画布必须能存。 */
+  const nativeGameStudio = createNativeGameStudio()
+  const authorizeNativeGame = (name: string) => { const decision = resolveTool(name, toolPolicy.store.read(), 'full'); if (!decision.allowed) throw new Error(decision.code + ': ' + name) }
+  const nativeGame = createWorkflowNativeGame({
+    products: () => store.listProducts(true), studio: nativeGameStudio, prefix: PREFIX,
+    authorize: authorizeNativeGame,
+  })
+  const nativeGameManagement = createNativeGameManagement({ ...nativeGame, products: () => store.listProducts(true), authorize: authorizeNativeGame })
+  const nativeGameHttp = createNativeGameHttp({ prefix: PREFIX, studio: nativeGameStudio, products: () => store.listProducts(true), capabilities: () => nativeGame.capabilities(), management: nativeGameManagement })
   let canvasModule: ReturnType<typeof createWorkflowCanvasModule> | null = null
   let workflowSessionAdapter: ReturnType<typeof createWorkflowSessionAdapter> | null = null
   try {
@@ -6754,6 +6769,7 @@ export function apply(ctx: any): void {
         runsDbPath: join(dataDir, 'workflow-runs.sqlite'),
         runsRoot: join(dataDir, 'workflow-runs'),
         products: () => store.listProducts(true),
+        nativeGame,
         prepareSession: sessionAdapter.prepare,
         sessionAdapter,
         sessionEvents: (sessionId: string) => {
@@ -6783,6 +6799,7 @@ export function apply(ctx: any): void {
   registerModuleTool(ctx, store)
   registerTestCaseTool(ctx, store)
   registerTestFlowTools(ctx, store)
+  registerNativeGameTools(ctx, () => store.listProducts(true), { ...nativeGame, authorize: authorizeNativeGame, prefix: PREFIX })
 
   const webServer: WebServerFace | undefined = ctx.webServer
   if (webServer === undefined || typeof webServer.register !== 'function') {
@@ -6800,6 +6817,7 @@ export function apply(ctx: any): void {
         if (ideaModule !== null && (await ideaModule.handle(req, res, path, method, url))) return
         if (agentModule !== null && (await agentModule.handle(req, res, path, method, url))) return
         if (await toolPolicy.handle(req, res, path, method, url)) return
+        if (await nativeGameHttp.handle(req, res, path, method, url)) return
         if (canvasModule !== null && (await canvasModule.handle(req, res, path, method, url))) return
         if (method === 'GET' && (path === '/state' || path === '/')) {
           send(res, 200, store.readState())

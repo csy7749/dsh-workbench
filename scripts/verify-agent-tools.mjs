@@ -37,6 +37,10 @@ for (const n of ['workbench_ui_doc_publish', 'workbench_demo_publish', 'workbenc
   check(`UI/DEMO 工具 ${n} 已注册`, tools.some(t => t.name === n))
 }
 
+for (const n of ['workbench_game_create', 'workbench_game_build', 'workbench_game_preview', 'workbench_game_export', 'workbench_game_playtest', 'workbench_game_history', 'workbench_game_restore', 'workbench_game_asset_list', 'workbench_game_asset_generate', 'workbench_game_asset_adopt', 'workbench_game_blender', 'workbench_game_revision_propose', 'workbench_game_revision_verify', 'workbench_game_revision_recover']) {
+  check(`原生游戏工坊工具 ${n} 已注册`, tools.some(t => t.name === n))
+}
+
 // 5) render 可调用且不抛错（用最小返回值探针）
 let renderOk = true
 for (const t of tools) {
