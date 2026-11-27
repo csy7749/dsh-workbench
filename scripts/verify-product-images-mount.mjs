@@ -180,7 +180,7 @@ try {
     assert.equal(await imageProductPicker().inputValue(), id)
   }
   await page.goto(origin)
-  await page.locator('[data-act="portal-edit"]').first().waitFor({ state: 'attached' })
+  await page.locator('[data-workbench-page="start"] [data-act="project-game-open"][data-product="product-a"]').waitFor({ state: 'attached' })
   await page.locator('.side-item[data-view="ui"]').click()
   await section('design').waitFor()
   assert.equal(await page.locator('[data-product-images]').count(), 0, 'UI initially opens the design section')

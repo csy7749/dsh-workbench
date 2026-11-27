@@ -1132,4 +1132,57 @@ h1.page-title{font-size:29px;line-height:1.18;margin:0;font-weight:700;letter-sp
 .portal-feature-disclosure>.portal-group:first-of-type{margin-top:0;border:0;border-top:1px solid var(--line);border-radius:0}
 .portal-feature-disclosure>.portal-group{margin:0 10px 10px}
 
+/* Game-first shell: reuse the host palette and existing domain views. */
+.app.workbench-v1{min-width:0;min-height:0;position:relative}
+.workbench-v1 .content{padding:24px 28px 40px}
+.wb-primary-nav{display:grid;gap:4px;padding:0 1px 17px;margin-bottom:14px;border-bottom:1px solid var(--line)}
+.wb-primary-nav>.side-item{width:100%;border:0;background:transparent;text-align:left;height:38px;font-size:13px}
+.wb-primary-nav>.side-item.active{background:var(--accent-soft)}
+.wb-primary-nav>.side-item:hover{background:var(--hover)}
+.wb-side-scope{margin:3px 8px 9px;font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wb-settings{width:100%;justify-content:flex-start;gap:8px;background:transparent!important;border-color:transparent!important}
+.app.collapsed .wb-settings{font-size:0;justify-content:center;padding:0}
+.app.collapsed .wb-side-scope{display:none}
+.workbench-v1 .side-foot{padding:8px 0 0}
+.wb-start,.wb-more-group{max-width:1440px;margin:0 auto}
+.wb-start-hero{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(220px,1fr);gap:28px;align-items:center;padding:30px;background:var(--panel);border:1px solid var(--line);border-radius:12px;margin:20px 0 22px}
+.wb-start-hero h2{font-size:26px;letter-spacing:-.5px;line-height:1.3;margin:8px 0}
+.wb-start-hero p{color:var(--text-2);margin:0 0 20px;overflow-wrap:anywhere}
+.wb-start-path{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center;color:var(--text-2)}
+.wb-start-path span{padding:14px 12px;background:var(--panel-2);border:1px solid var(--line);border-radius:7px;white-space:nowrap}
+.wb-start-path i{font-style:normal;color:var(--text-3)}
+.wb-start-path small{flex-basis:100%;text-align:center;color:var(--text-3);font-size:11px;margin-top:10px}
+.wb-project-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr));gap:16px;align-items:start}
+.wb-project-card{padding:20px;background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}
+.wb-project-card h2{font-size:17px;margin:6px 0 10px;overflow-wrap:anywhere}
+.wb-project-card>p{color:var(--text-2);font-size:12px;line-height:1.7}
+.wb-project-path{font-size:11px!important;overflow-wrap:anywhere;color:var(--text-3)!important;margin-bottom:18px}
+.wb-project-products{display:grid;gap:8px;margin:16px 0}
+.wb-project-products>div{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line);font-size:12px}
+.wb-project-products>div>span{overflow-wrap:anywhere;min-width:0}
+.wb-project-products button{flex:none}
+.wb-project-foot,.wb-start-links{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.wb-start-links{margin-top:26px;padding-top:18px;border-top:1px solid var(--line)}
+.wb-shell-empty{padding:38px 24px;text-align:center;background:var(--panel);border:1px dashed var(--line-strong);border-radius:10px;color:var(--text-2);margin:20px 0}
+.wb-shell-empty h2{color:var(--text);font-size:21px}
+.wb-shell-empty .btn{margin:18px auto 0}
+.wb-game-context{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--panel)}
+.wb-game-context>div:first-child{display:flex;flex-direction:column;min-width:0}
+.wb-game-context b{font-size:13px;overflow-wrap:anywhere}
+.wb-context-pickers{display:flex;gap:8px;flex-wrap:wrap;min-width:0}
+.wb-context-pickers select{min-height:32px;max-width:240px;min-width:0;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);font:inherit;padding:4px 8px}
+.app.game-mode .content{padding:0}
+.app.game-mode .detail{display:none}
+.wb-more-group{margin:24px 0}
+.wb-more-group h2{font-size:14px;font-weight:600;color:var(--text-2)}
+.wb-tool-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:10px}
+.wb-tool-link{text-align:left;padding:15px 16px;border:1px solid var(--line);border-radius:8px;background:var(--panel);cursor:pointer;min-width:0}
+.wb-tool-link:hover{border-color:var(--line-strong);background:var(--hover)}
+.wb-tool-link b,.wb-tool-link small{display:block}
+.wb-tool-link b{font-weight:600;font-size:13px}
+.wb-tool-link small{font-size:11px;color:var(--text-3);margin-top:5px}
+@media(max-width:1100px){.workbench-v1 .content{padding:20px}.wb-start-hero{padding:22px;gap:18px}.wb-start-hero h2{font-size:23px}.wb-start-path{gap:6px}.wb-start-path span{padding:10px 8px}}
+@media(max-width:900px){.wb-start-hero{grid-template-columns:1fr}.wb-start-path{justify-content:flex-start}.wb-start-path small{text-align:left}.workbench-v1 .topbar{gap:5px;padding:0 10px}.workbench-v1 .topbar .searchbar{max-width:240px}.workbench-v1 .topbar .save{display:none}.wb-game-context{padding:12px 16px}.wb-project-grid{gap:12px}.workbench-v1 .page-title{font-size:25px}}
+@media(max-width:640px){.workbench-v1 .content{padding:16px 12px}.workbench-v1 .topbar .searchbar{display:none}.wb-context-pickers{width:100%}.wb-context-pickers select{flex:1;width:40%}.wb-start-hero{padding:20px}.wb-project-card{padding:16px}.workbench-v1 .view-head{flex-wrap:wrap}.app.game-mode .content{padding:0}}
+
 `

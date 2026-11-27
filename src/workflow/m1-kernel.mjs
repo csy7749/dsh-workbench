@@ -1775,7 +1775,7 @@ export function createWorkflowKernel(db, root, options = {}) {
   }
 
   return {
-    db, root, createRun, claim, skipConditionalStep, rerunStep, restoreAdoption, forkRun, compareSnapshots, definitionFor, targetsFor, inputBindingFor, assertBindingVersion, storeCandidate, storeOutputSetCandidate, adopt, saveDraft, validateHumanDraft, readDraftFile, saveDraftFile, confirmHuman,
+    db, root, transaction, createRun, claim, skipConditionalStep, rerunStep, restoreAdoption, forkRun, compareSnapshots, definitionFor, targetsFor, inputBindingFor, assertBindingVersion, storeCandidate, storeOutputSetCandidate, adopt, saveDraft, validateHumanDraft, readDraftFile, saveDraftFile, confirmHuman,
     heartbeatAttempt, markUnknown, markFailed, reconcileUnknown, resume, cancelRun, cancelAttempt, abandonAttemptResult, pauseRun, appendEvent,
     claimOutbox, completeOutbox, markOutboxUnknown, retryOutbox, reconcilePublishEffect, settleRun,
     readSnapshot, readSnapshotFiles, exportSnapshot, scanRecoverable, pruneRequests, verifySnapshot,

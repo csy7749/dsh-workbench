@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-27",
+  "timezone": "Asia/Shanghai",
+  "branch": "codex/game-workbench-v1",
+  "baseline": "c37a24ea315f590b11dcbee149081ba90697ded7",
+  "scope": "real built lib/index.js Host registrations, actual HTTP handlers, temporary SQLite and game files",
+  "builds": "Host/client bundles passed",
+  "completeRegression": "npm run verify: passed",
+  "browserFixtures": "54 game GET requests; passed; no page errors or external requests",
+  "compatibility": [
+    "product-images-mount: passed",
+    "workflow:hub: passed",
+    "game-studio:extensions: passed"
+  ],
+  "realHostBrowser": {
+    "command": "node scripts/verify-game-workspace-v1-host.mjs --browser",
+    "status": "passed",
+    "browser": "158.0.4370.33",
+    "httpAssertions": 27,
+    "productionGameRequests": 57,
+    "productionWiring": true,
+    "renderer": {
+      "nativeTemplate": "cinderwatch@1",
+      "renderer": {
+        "name": "three.js",
+        "revision": "170",
+        "width": 358,
+        "height": 280,
+        "quality": 1
+      },
+      "webgl": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+      "parentBlocked": true
+    },
+    "creationAndExport": {
+      "productId": "prod-e6e673f4-63c",
+      "slug": "host-ui-cinderwatch",
+      "buildId": "ef083143b931",
+      "exported": true
+    },
+    "acceptedCandidate": {
+      "id": "02f726da16849de7",
+      "buildId": "54ef3a134f1f",
+      "status": "accepted",
+      "checks": {
+        "renderer": true,
+        "buildSpend": true,
+        "manualTakeover": true,
+        "commanderReturn": true,
+        "pauseToggle": true,
+        "waveProgress": true,
+        "kills": true,
+        "economy": true,
+        "mobileLayout": true
+      },
+      "errors": 0
+    },
+    "failedCandidateRollback": {
+      "id": "60a53aace65367bd",
+      "failedBuildId": "c06b63fdced3",
+      "status": "rejected",
+      "restoredBuildId": "54ef3a134f1f",
+      "currentHashRestored": true,
+      "sourceRestored": true,
+      "failedReportBoundToCandidateBuild": true,
+      "intentionalRuntimeErrors": 2
+    },
+    "errors": [],
+    "providerCalls": [],
+    "externalRequests": [],
+    "unassessed": [
+      "桌面战斗按固定 1/60 秒执行游戏原有逻辑；模拟时间不代表实际运行帧率。",
+      "手机尺寸、触屏与暂停通过浏览器模拟验证；尚未完成真人游玩或真机验收。",
+      "未覆盖全部地图与 Boss、长时间稳定性、完整难度平衡、音质或资产替换。"
+    ]
+  },
+  "committedScreenshot": "implemented-workspace.png",
+  "liveDsh": "not exercised; Host registration context is a harness",
+  "humanAcceptance": "not exercised"
+}

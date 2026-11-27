@@ -10,6 +10,7 @@ import { createIdeaView, type IdeaViewHandle } from './idea'
 import { createUiDesignView, type UiDesignViewHandle } from './ui-design'
 import { createDemoView, type DemoViewHandle } from './demo'
 import { createProductImagesView, type ProductImagesViewHandle } from './product-images'
+import { createGameWorkspace, type GameWorkspaceHandle } from './game-workspace'
 import { mountCanvasInto } from './workflow/canvas-panel'
 import { workflowRunMonitor } from './workflow/run-monitor.ts'
 import { renderRunHub, RUN_HUB_CSS, type RunHubFilter } from './workflow/run-hub.ts'
@@ -152,7 +153,7 @@ interface ProjectCard {
   path: string; name: string
   /** 统一项目 id（四域共用的那份项目） */
   projectId?: string
-  product?: Product; bugProject?: BugProject; tests: TestProject[]
+  product?: Product; products: Product[]; bugProject?: BugProject; tests: TestProject[]
 }
 interface Module {
   id: string; productId: string; mapId?: string; parentId: string; name: string; kind: 'module' | 'business' | 'feature' | 'requirement'
@@ -192,7 +193,7 @@ interface DB { spaces: Space[]; tasks: Task[]; focus: FocusSession[]; settings: 
 interface Health { ok: boolean; engine: string; file: string; sqlite?: string; revision: number; tasks: number; spaces: number; focus: number }
 
 interface Ui {
-  view: 'portal' | 'board' | 'list' | 'timeline' | 'matrix' | 'flow' | 'calendar' | 'focus' | 'stats' | 'news' | 'notes' | 'bugs' | 'product' | 'ui' | 'demo' | 'test' | 'idea' | 'assets' | 'wftpl' | 'workflows' | 'wfrun'
+  view: 'portal' | 'projects' | 'game' | 'materials' | 'more' | 'legacy' | 'board' | 'list' | 'timeline' | 'matrix' | 'flow' | 'calendar' | 'focus' | 'stats' | 'news' | 'notes' | 'bugs' | 'product' | 'ui' | 'demo' | 'test' | 'idea' | 'assets' | 'wftpl' | 'workflows' | 'wfrun'
   /** 当前项目范围：'all' 全部 / 'none' 未归属 / 其余为 DSH 工作区绝对路径。 */
   project: string
   scope: 'today' | 'all'
@@ -458,6 +459,17 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   let productImagesView: ProductImagesViewHandle | null = null
   let productImagesHost: HTMLElement | null = null
   let productImagesScope = ''
+  let gameProductId = ''
+  let gameWorkspace: GameWorkspaceHandle | null = null
+  let gameWorkspaceHost: HTMLElement | null = null
+  let gameWorkspaceScope = ''
+  const lastGameKey = 'dsh.workbench.last-game.v1'
+  function lastGame(): { project: string; productId: string } | null {
+    try {
+      const value = JSON.parse(localStorage.getItem(lastGameKey) ?? 'null')
+      return value && typeof value.project === 'string' && typeof value.productId === 'string' ? value : null
+    } catch { return null }
+  }
   let productNodeSelected: string | null = null
   /** 画布引擎：mind-elixir（编辑）/ ECharts 力导（关系）。 */
   let productMapEngine: 'tree' | 'force' = 'tree'
@@ -634,24 +646,14 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   async function loadTestPlans(): Promise<void> {
     /* 兜底：projects 可能还没加载完（测试页可直接从侧栏进入），先补一次再取 id */
     if (projects.length === 0) await loadProjectsList()
-    let projectId = currentProjectId()
-    if (projectId === '') {
-      /* 最后一次兜底：直接问 API 要第一个项目 */
-      try {
-        const res = await fetch(`${API}/projects`)
-        if (res.ok) {
-          const data = await res.json() as { projects?: typeof projects }
-          projects = Array.isArray(data.projects) ? data.projects : []
-          projectId = projects[0]?.id ?? ''
-        }
-      } catch { /* ignore */ }
-    }
+    const projectId = selectedProjectId()
     if (projectId === '') { testPlans = []; pendingRegression = []; return }
     try {
       const [pRes, rRes] = await Promise.all([
         fetch(`${API}/tests/plans?projectId=${encodeURIComponent(projectId)}`),
         fetch(`${API}/tests/pending-regression?projectId=${encodeURIComponent(projectId)}`),
       ])
+      if (workbenchDisposed || projectId !== selectedProjectId()) return
       if (pRes.ok) { const d = await pRes.json() as { plans?: typeof testPlans }; testPlans = Array.isArray(d.plans) ? d.plans : [] }
       if (rRes.ok) { const d = await rRes.json() as { cases?: typeof pendingRegression }; pendingRegression = Array.isArray(d.cases) ? d.cases : [] }
     } catch { /* 保留旧值 */ }
@@ -720,7 +722,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     const focusAttribute = ['data-wf-filter', 'data-wf-current', 'data-wf-open', 'data-wf-refresh', 'data-wf-hub', 'data-wf-templates'].find(attribute => focused?.hasAttribute(attribute))
     const focusValue = focusAttribute ? focused?.getAttribute(focusAttribute) : undefined
     const projectScope = ui.view === 'portal'
-      ? (ui.project !== 'all' && ui.project !== 'none' ? ui.project : undefined)
+      ? undefined
       : (workflowCurrentProject && !['all', 'none'].includes(ui.project) ? ui.project : undefined)
     target.innerHTML = renderRunHub(snapshot, {
       compact: ui.view === 'portal', filter: workflowFilter, project: projectScope,
@@ -784,7 +786,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     const ensure = (path: string): ProjectCard => {
       const found = map.get(path)
       if (found !== undefined) return found
-      const card: ProjectCard = { path, name: '', tests: [] }
+      const card: ProjectCard = { path, name: '', products: [], tests: [] }
       map.set(path, card)
       return card
     }
@@ -810,7 +812,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     for (const product of products) {
       if (!product.workspacePath && !product.projectId) continue
       const card = cardFor(product.workspacePath, product.projectId)
-      card.product = product
+      card.products.push(product)
+      card.product = card.products.length === 1 ? product : undefined
       if (card.name === '') card.name = product.name
     }
     for (const project of bugProjects) {
@@ -869,16 +872,24 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   }
   /** 切换项目范围：同时把产品 / Bug / 测试三个域的当前选择切到该项目，门户点卡片即完成对齐。 */
   function setProject(path: string, render = true): void {
+    if (path !== ui.project) {
+      gameProductId = ''
+      gameWorkspace?.destroy(); gameWorkspace = null; gameWorkspaceHost = null; gameWorkspaceScope = ''
+      testPlans = []; pendingRegression = []; projectDemos = []
+    }
     ui.project = path
     uiImageProductId = ''
     const card = projectByPath(path)
+    productSelected = null
+    productPicked = new Set()
     if (card?.product !== undefined) {
       productSelected = card.product.id
       productPicked = productDefaultPicked(card.product)
     }
-    if (card?.bugProject !== undefined) bugProjectFilter = card.bugProject.id
-    const targetTest = card?.tests[0]
-    if (targetTest !== undefined) testProjectSelected = targetTest.id
+    bugProjectFilter = card?.bugProject?.id ?? 'all'
+    bugSelected = new Set()
+    const targetTest = card?.tests.length === 1 ? card.tests[0] : undefined
+    testProjectSelected = targetTest?.id ?? null
     db.settings.project = path === 'none' ? '' : path
     scheduleSave()
     if (render) renderAll()
@@ -900,16 +911,16 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     return `<select id="wb-project" class="wb-project-select" title="按项目筛选">${options.join('')}</select>`
   }
   async function refreshPortal(): Promise<void> {
-    await Promise.all([loadProducts(true), loadBugs(true), loadTests(true), loadThemes(true)])
+    await Promise.all([loadProjectsList(), loadProducts(true), loadBugs(true), loadTests(true), loadThemes(true)])
     await loadProjectDemos()
     restoreProject()
-    if (ui.view === 'portal' || ui.view === 'bugs' || ui.view === 'test') renderAll()
+    if (['portal', 'projects', 'game', 'materials', 'legacy', 'bugs', 'test'].includes(ui.view)) renderAll()
   }
   function openFeature(view: Ui['view']): void {
     if (view === 'workflows') workflowFilterManual = false
     const card = projectByPath(ui.project)
     if (view === 'product' && card?.product !== undefined) productSelected = card.product.id
-    if (view === 'test' && card?.tests[0] !== undefined) testProjectSelected = card.tests[0].id
+    if (view === 'test' && card?.tests.length === 1) testProjectSelected = card.tests[0].id
     if (view === 'bugs') bugProjectFilter = card?.bugProject?.id ?? 'all'
     if (view === 'notes') {
       const book = card?.product !== undefined ? notebooks.find(b => b.id === card.product?.notebookId) : undefined
@@ -923,6 +934,9 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (view === 'bugs' && bugs.length === 0) void loadBugs()
     if (view === 'product' && products.length === 0) void loadProducts()
     if (view === 'ui') void loadUiContext()
+    if (['projects', 'game', 'materials', 'legacy'].includes(view)) void Promise.all([loadProjectsList(), loadProducts(true)]).then(() => {
+      if (!workbenchDisposed && ui.view === view) renderAll()
+    })
     if (view === 'workflows' && products.length === 0) void loadProducts(true).then(() => {
       if (workbenchDisposed || ui.view !== 'workflows') return
       restoreProject()
@@ -1034,7 +1048,10 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       app.classList.toggle('collapsed', ui.collapsed)
       app.classList.toggle('compact', ui.compact)
       app.classList.toggle('focus-expand', ui.view === 'focus' && ui.focusExpand)
-      app.classList.toggle('no-detail', ['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl', 'workflows', 'wfrun', 'ui', 'demo'].includes(ui.view))
+      app.classList.add('workbench-v1')
+      app.classList.toggle('game-mode', ui.view === 'game')
+      app.classList.toggle('flow-mode', ['flow', 'wftpl', 'wfrun'].includes(ui.view))
+      app.classList.toggle('no-detail', ['portal', 'projects', 'game', 'materials', 'more', 'legacy', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl', 'workflows', 'wfrun', 'ui', 'demo'].includes(ui.view))
     }
     renderSidebar()
     renderTopbar()
@@ -1044,126 +1061,34 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     syncAssetsView()
   }
   function renderSidebar(): void {
-    const ts = todayStats()
-    const pct = ts.total > 0 ? Math.round((ts.done / ts.total) * 100) : 0
-    let context = ''
-    if (ui.view === 'portal') {
-      const cards = projectCards()
-      const items = cards.map(card => sideItem(`${esc(card.name)}`, { icon: 'product', act: 'portal-project', id: esc(card.path), n: projectTaskCount(card.path), active: ui.project === card.path })).join('')
-      context = sideGroup('项目 / 产品', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">先选项目，再进入对应功能</div>' +
-        sideItem('全部项目', { icon: 'layers', act: 'portal-project', id: 'all', n: db.tasks.length, active: ui.project === 'all' }) +
-        items +
-        sideItem('未归属', { icon: 'inbox', act: 'portal-project', id: 'none', n: projectTaskCount('none'), active: ui.project === 'none' }) +
-        sideItem('新建项目 / 产品', { icon: 'plus', act: 'portal-new' }))
-    } else if (ui.view === 'workflows' || ui.view === 'wfrun') {
-      context = sideGroup('工作流', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">跨项目查看运行、人工审核与异常</div>' +
-        sideItem('运行概览', { icon: 'flow', view: 'workflows', active: ui.view === 'workflows' }) +
-        sideItem('工作流模板', { icon: 'layers', view: 'wftpl' }))
-    } else if (ui.view === 'calendar') {
-      context = sideGroup('计划', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">安排时间与节奏</div>' +
-        '<div class="side-sub" style="padding:2px 8px 4px;color:var(--text-3);font-size:10.5px">计划视图</div>' +
-        sideItem('时间轴', { icon: 'list', view: 'timeline' }) +
-        sideItem('日历', { icon: 'calendar', view: 'calendar', active: true }))
-    } else if (ui.view === 'focus') {
-      context = sideGroup('专注', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">管理当前任务、计时长度和待专注队列</div>' +
-        sideItem('专注空间', { icon: 'target', view: 'focus', active: true }) +
-        sideItem('待专注', { icon: 'clock', view: 'focus', n: db.tasks.filter(t => t.status !== 'done').length }))
-    } else if (ui.view === 'ui' || ui.view === 'demo') {
-      const title = ui.view === 'ui' ? 'UI 设计' : 'DEMO'
-      const cards = projectCards().filter(card => card.projectId !== undefined && card.projectId !== '')
-      const items = cards.map(card => sideItem(esc(card.name), { icon: 'product', act: 'portal-project', id: esc(card.path), n: projectTaskCount(card.path), active: ui.project === card.path })).join('')
-      context = `<div class="side-sec"><div class="side-head">项目上下文</div><div class="side-sub" style="padding:3px 8px 6px">${title} 按所选项目读取与保存</div>${items || sideItem('打开项目门户', { icon: 'layers', act: 'portal-home' })}</div>`
-    } else if (ui.view === 'test') {
-      const items = testProjects.map(p => sideItem(`${esc(p.name)}`, { icon: 'test', act: 'test-pick', id: p.id, active: testProjectSelected === p.id })).join('')
-      context = sideGroup('测试', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">用例 → 执行 → Bug → 回归 → 报告</div>' +
-        items +
-        sideItem('新建测试项目', { icon: 'plus', act: 'test-new' }))
-    } else if (ui.view === 'product') {
-      const items = products.map(p => sideItem(`${esc(p.name)}`, { icon: 'product', act: 'product-select', id: p.id, active: productSelected === p.id })).join('')
-      context = sideGroup('产品设计', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">导图 → 设计笔记 → 多风格 Demo</div>' +
-        items +
-        sideItem('新建产品', { icon: 'plus', act: 'product-new' }))
-    } else if (ui.view === 'bugs') {
-      const projectItems = bugProjects.map(project => sideItem(`${esc(project.name)} · ${bugs.filter(b => b.projectId === project.id).length}`, { icon: 'bug', act: 'bug-project', id: project.id, active: bugProjectFilter === project.id })).join('')
-      context = sideGroup('Bug 项目', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">项目关联 DSH 工作区，可批量在新会话中修复</div>' +
-        sideItem('全部 Bug', { icon: 'layers', act: 'bug-project', id: 'all', active: bugProjectFilter === 'all' }) +
-        projectItems +
-        sideItem('新建项目', { icon: 'plus', act: 'bug-project-new' }))
-    } else if (ui.view === 'notes') {
-      context = sideGroup('记事本', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">随手记、Markdown、标签与收藏</div>' +
-        sideItem('全部笔记', { icon: 'notebook', view: 'notes', active: true }) +
-        sideItem('新建笔记', { icon: 'plus', act: 'note-new' }))
-    } else if (ui.view === 'news') {
-      context = sideGroup('新闻', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">按主题、按时间用 DSH Agent 检索</div>' +
-        sideItem('新闻检索', { icon: 'news', view: 'news', active: true }) +
-        sideItem('新增订阅', { icon: 'plus', act: 'news-add' }))
-    } else if (ui.view === 'assets') {
-      context = sideGroup('资产库', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">浏览本机 Unity 已购资产</div>' +
-        sideItem('Unity 资产库', { icon: 'layers', view: 'assets', active: true }))
-    } else if (ui.view === 'idea') {
-      context = sideGroup('灵感', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">中间一栏管理灵感；画布可在导图 / 力导之间切换</div>' +
-        '<div class="side-sub" style="padding:2px 8px 4px;color:var(--text-3);font-size:10.5px">研发视图</div>')
-    } else if (ui.view === 'stats') {
-      context = sideGroup('统计', null,
-        '<div class="side-sub" style="padding:3px 8px 6px">用同一套任务数据复盘每天、每周与全年</div>' +
-        sideItem('统计', { icon: 'chart', view: 'stats', active: true }) +
-        sideItem('数据复盘', { icon: 'spark', act: 'review' }))
-    } else {
-      context = sideGroup('任务', `${ts.pending} 项待处理`,
-        sideItem('今天', { icon: 'home', view: 'list', scope: 'today', n: ts.pending, active: ui.scope === 'today' && ui.view === 'list' }) +
-        sideItem('全部任务', { icon: 'inbox', view: 'list', scope: 'all', n: db.tasks.length, active: ui.scope === 'all' }) +
-        sideItem('看板', { icon: 'board', view: 'board', active: ui.view === 'board' }) +
-        sideItem('四象限', { icon: 'grid', view: 'matrix', active: ui.view === 'matrix' }) +
-        '<div class="side-sub" style="padding:6px 8px 0;color:var(--text-3);font-size:10.5px">计划视图</div>' +
-        sideItem('时间轴', { icon: 'list', view: 'timeline' }) +
-        sideItem('日历', { icon: 'calendar', view: 'calendar' }))
-    }
-    const spaces = db.spaces.map(space => sideItem(space.name, {
-      dot: space.color, space: space.id, n: db.tasks.filter(t => t.space === space.id && t.date === todayKey() && t.status !== 'done').length,
-      active: ui.space === space.id,
-    })).join('')
     const sidebar = $id('wb-sidebar')
     if (!sidebar) return
-    sidebar.innerHTML = `
-      <div class="brand">
-        <div class="brand-mark">${ic('logo', 17)}</div>
-        <div><div class="brand-t">个人工作台</div><div class="brand-s">本地工作台 · SQLite</div></div>
-        <button class="brand-collapse" data-act="collapse" title="收起侧栏">${ic('panel', 15)}</button>
-      </div>
-      <div class="side-home${ui.view === 'portal' ? ' active' : ''}">
-        <div class="side-item${ui.view === 'portal' ? ' active' : ''}" data-act="portal-home">${ic('home', 15)}<span>门户</span></div>
-        ${sideItem('工作流', { icon: 'flow', view: 'workflows', active: ui.view === 'workflows' || ui.view === 'wfrun', n: runCounts(workflowRunMonitor.snapshot().runs).attention })}
-      </div>
-      <div class="side-scroll">${context}
-        <div class="side-sec">
-          <div class="side-head">研发</div>
-          ${sideItem('产品设计', { icon: 'product', view: 'product', active: ui.view === 'product' })}
-          ${sideItem('UI 设计', { icon: 'layout', view: 'ui', active: ui.view === 'ui' })}
-          ${sideItem('DEMO', { icon: 'play', view: 'demo', active: ui.view === 'demo' })}
-          ${sideItem('Bug 管理', { icon: 'bug', view: 'bugs', active: ui.view === 'bugs' })}
-          ${sideItem('测试', { icon: 'test', view: 'test', active: ui.view === 'test' })}
-          ${sideItem('灵感', { icon: 'spark', view: 'idea', active: ui.view === 'idea' })}
-          ${sideItem('Unity 资产库', { icon: 'layers', view: 'assets', active: ui.view === 'assets' })}
-          ${sideItem('工作流模板', { icon: 'flow', view: 'wftpl', active: ui.view === 'wftpl' })}
+    const isProject = ['projects', 'game', 'product', 'ui', 'demo', 'bugs', 'test', 'flow'].includes(ui.view)
+    const active = ui.view === 'portal' ? 'start' : isProject ? 'projects' : ['materials', 'assets'].includes(ui.view) ? 'assets' : ['workflows', 'wfrun', 'wftpl'].includes(ui.view) ? 'runs' : 'more'
+    const entries = [
+      ['start', 'portal', 'home', '开始'], ['projects', 'projects', 'product', '项目'],
+      ['assets', 'materials', 'layers', '素材'], ['runs', 'workflows', 'flow', '运行'], ['more', 'more', 'grid', '更多'],
+    ]
+    const attention = runCounts(workflowRunMonitor.snapshot().runs).attention
+    const cards = projectCards()
+    const context = ui.project !== 'all' && ui.project !== 'none' ? projectByPath(ui.project) : undefined
+    sidebar.innerHTML = `<div class="brand"><div class="brand-mark">${ic('logo', 17)}</div><div><div class="brand-t">创作工作台</div><div class="brand-s">游戏优先 · 本地项目</div></div><button class="brand-collapse" data-act="collapse" title="收起侧栏">${ic('panel', 15)}</button></div>
+      <nav class="wb-primary-nav" aria-label="工作台主导航">${entries.map(([key, view, icon, label]) => `<button class="side-item${active === key ? ' active' : ''}" data-workbench-nav="${key}" data-view="${view}" aria-current="${active === key ? 'page' : 'false'}">${ic(icon, 16)}<span>${label}</span>${key === 'runs' ? `<span class="n">${attention}</span>` : ''}</button>`).join('')}</nav>
+      <div class="side-scroll">
+        <div class="side-sec"><div class="side-head">当前范围</div><div class="wb-side-scope" title="${esc(ui.project)}">${esc(projectLabel(ui.project))}</div>
+          ${context ? sideItem('游戏工作区', { icon: 'play', view: 'game', active: ui.view === 'game' }) : sideItem('选择一个项目', { icon: 'product', view: 'projects' })}
         </div>
-        ${ui.view === 'portal' ? '' : `<div class="side-sec"><div class="side-head">空间<button class="add" data-act="space-add" title="新建空间">${ic('plus', 13)}</button></div>${spaces}</div>`}
+        <div class="side-sec"><div class="side-head">项目工具</div>
+          ${sideItem('设计资料', { icon: 'product', view: 'product', active: ui.view === 'product' })}
+          ${sideItem('界面与图片', { icon: 'layout', view: 'ui', active: ui.view === 'ui' })}
+          ${context ? sideItem('DEMO 与页面', { icon: 'play', view: 'demo', active: ui.view === 'demo' }) + sideItem('问题与测试', { icon: 'bug', view: 'bugs', active: ui.view === 'bugs' || ui.view === 'test' }) : ''}
+        </div>
+        <div class="side-sec"><div class="side-head">项目<button class="add" data-act="portal-new" title="新建项目">${ic('plus', 13)}</button></div>
+          ${cards.slice(0, 4).map(card => sideItem(esc(card.name), { icon: 'product', act: ['ui', 'demo', 'product', 'test'].includes(ui.view) ? 'portal-project' : 'project-game-open', id: esc(card.path), active: ui.project === card.path })).join('') || '<div class="side-sub">从一个可玩起点开始</div>'}
+          ${cards.length > 4 ? sideItem('查看全部项目', { view: 'projects', icon: 'layers' }) : ''}
+        </div>
       </div>
-      <div class="side-foot">
-        <div class="foot-ring" style="--p:${pct}"><i></i></div>
-        <div><b>今日进度</b> · 已完成 <b>${ts.done}</b> 项任务</div>
-        <button class="icon-btn" data-act="settings" title="工作台设置" aria-label="工作台设置" style="margin-left:auto">${ic('settings', 14)}</button>
-      </div>`
+      <div class="side-foot"><button class="btn wb-settings" data-act="settings">${ic('settings', 15)}工作台设置</button></div>`
   }
   function sideGroup(title: string, count: string | null, items: string): string {
     return `<div class="side-sec"><div class="side-head">${title}${count ? `<span class="count">${count}</span>` : ''}<button class="add" data-act="new" title="新建任务">${ic('plus', 13)}</button></div>${items}</div>`
@@ -1176,6 +1101,10 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
 
   function openCommandPalette(): void {
     const commands = [
+      { id: 'projects', label: '项目', hint: '选择产品和本地工作区', icon: 'product', view: 'projects' },
+      { id: 'game', label: '游戏工作区', hint: '创建、制作、试玩与交付', icon: 'play', view: 'game' },
+      { id: 'materials', label: '素材', hint: '图片、游戏素材与 Unity 库', icon: 'layers', view: 'materials' },
+      { id: 'more', label: '更多', hint: '全部工具与兼容入口', icon: 'grid', view: 'more' },
       { id: 'portal', label: '项目门户', hint: '选项目 / 进功能', icon: 'home', view: 'portal' },
       { id: 'workflows', label: '工作流', hint: '跨项目运行 / 待处理', icon: 'flow', view: 'workflows' },
       { id: 'board', label: '看板', hint: '任务视图', icon: 'board', view: 'board' },
@@ -1227,7 +1156,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (!topbar) return
     const saveText = saveState === 'saved' ? '已自动保存' : saveState === 'saving' ? '保存中…' : '保存失败'
     const taskViews: Ui['view'][] = ['board', 'list', 'timeline', 'matrix', 'calendar', 'focus']
-    const primaryAction = ui.view === 'portal'
+    const primaryAction = ui.view === 'projects'
       ? `<button class="btn-primary" data-act="portal-new">${ic('plus', 14)}新建项目 / 产品</button>`
       : taskViews.includes(ui.view)
         ? `<button class="btn-primary" data-act="new">${ic('plus', 14)}新建任务</button>`
@@ -1253,10 +1182,15 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   /* ---------- 内容 ---------- */
   const FILTER_LABEL: Record<Ui['filter'], string> = { all: '筛选', high: '高优先级', sub: '有子待办', attach: '有附件', unscheduled: '未排时间' }
   const SORT_LABEL: Record<Ui['sort'], string> = { time: '按时间', priority: '按优先级', created: '按创建', title: '按标题' }
-  const MODULE_OF: Record<Ui['view'], string> = { portal: '工作台', board: '任务', list: '任务', timeline: '计划', matrix: '任务', calendar: '计划', focus: '专注', stats: '统计', news: '新闻', notes: '记事本', bugs: 'Bug 管理', product: '产品设计', ui: 'UI 设计', demo: 'DEMO', test: '测试', idea: '研发', assets: '研发', flow: '研发', wftpl: '研发', workflows: '工作流', wfrun: '工作流' }
-  const NAME_OF: Record<Ui['view'], string> = { portal: '项目门户', board: '看板', list: '行动清单', timeline: '时间轴', matrix: '四象限', flow: '流程', calendar: '日历', focus: '当前专注', stats: '数据复盘', news: '新闻检索', notes: '笔记', bugs: '质量管理', product: '产品', test: '测试', idea: '灵感', assets: 'Unity 资产库', ui: 'UI 设计', demo: 'DEMO', wftpl: '工作流模板', workflows: '运行概览', wfrun: '运行详情' }
+  const MODULE_OF: Record<Ui['view'], string> = { portal: '工作台', projects: '工作台', game: '项目', materials: '工作台', more: '工作台', legacy: '兼容入口', board: '任务', list: '任务', timeline: '计划', matrix: '任务', calendar: '计划', focus: '专注', stats: '统计', news: '新闻', notes: '记事本', bugs: 'Bug 管理', product: '产品设计', ui: 'UI 设计', demo: 'DEMO', test: '测试', idea: '研发', assets: '素材', flow: '研发', wftpl: '运行', workflows: '运行', wfrun: '运行' }
+  const NAME_OF: Record<Ui['view'], string> = { portal: '开始', projects: '项目', game: '游戏工作区', materials: '素材', more: '更多', legacy: '旧版门户', board: '看板', list: '行动清单', timeline: '时间轴', matrix: '四象限', flow: '流程', calendar: '日历', focus: '当前专注', stats: '数据复盘', news: '新闻检索', notes: '笔记', bugs: '质量管理', product: '产品', test: '测试', idea: '灵感', assets: 'Unity 资产库', ui: 'UI 设计', demo: 'DEMO', wftpl: '工作流模板', workflows: '运行概览', wfrun: '运行详情' }
 
   function renderContent(): void {
+    const gameProduct = ui.view === 'game' ? gameProducts().find(item => item.id === gameProductId) : undefined
+    const gameScope = gameProduct ? JSON.stringify([ui.project, gameProduct.id, gameProduct.workspacePath]) : ''
+    if (gameWorkspace && gameWorkspaceScope !== gameScope) {
+      gameWorkspace.destroy(); gameWorkspace = null; gameWorkspaceHost = null; gameWorkspaceScope = ''
+    }
     if (ui.view !== 'demo' && demoView !== null) { demoView.destroy(); demoView = null }
     const imageProduct = isUiImages() ? uiImageProduct() : undefined
     const imageScope = imageProduct ? JSON.stringify([imageProduct.id, imageProduct.workspacePath]) : ''
@@ -1266,6 +1200,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (uiDesignView !== null && uiDesignScope !== selectedProjectId()) {
       uiDesignView.destroy(); uiDesignView = null; uiDesignHost = null; uiDesignScope = ''
     }
+    // Keep the live browsing context and editor DOM intact on unrelated shell refreshes.
+    if (gameProduct && gameWorkspace?.isMounted() && gameWorkspaceHost?.isConnected) return
     if (ui.view === 'idea') { syncIdeaView(); return }
     if (ui.view === 'assets') { syncAssetsView(); return }
     const el = $id('wb-generic') ?? content()
@@ -1277,8 +1213,13 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       return
     }
     let html = ''
-    if (ui.view === 'portal') html = renderPortal()
-    else if (ui.view === 'workflows') html = `<div class="view-head"><div><div class="eyebrow">跨项目执行</div><h1 class="page-title">工作流</h1><div class="page-sub">查看运行、处理审核与异常，进入对应的任务和产物</div></div></div><div id="wb-workflow-summary"></div>`
+    if (ui.view === 'portal') html = renderStart()
+    else if (ui.view === 'projects') html = renderProjects()
+    else if (ui.view === 'game') html = renderGameShell()
+    else if (ui.view === 'materials') html = renderMaterials()
+    else if (ui.view === 'more') html = renderMore()
+    else if (ui.view === 'legacy') html = renderPortal()
+    else if (ui.view === 'workflows') html = `<div class="view-head"><div><div class="eyebrow">跨项目执行</div><h1 class="page-title">运行</h1><div class="page-sub">当前汇总工作流运行、审核与异常；游戏构建和试玩报告在项目工作区查看。</div></div><button class="btn" data-view="wftpl">模板与高级编排</button></div><div id="wb-workflow-summary"></div>`
     else if (ui.view === 'wfrun') html = `<div class="view-head"><div><div class="eyebrow">工作流运行</div><h1 class="page-title">${esc(workflowRunTarget?.graphName ?? '运行详情')}</h1><div class="page-sub">${esc(workflowRunTarget?.productName ?? '')} · 查看本次冻结运行</div></div><button class="btn" data-wf-hub>返回工作流</button></div><div id="wb-flow-run-host" class="wf-host"></div>`
     else if (ui.view === 'board') html = renderBoard()
     else if (ui.view === 'list') html = renderList()
@@ -1303,6 +1244,9 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     const imageFocus = shadow.activeElement instanceof HTMLElement && productImagesHost?.contains(shadow.activeElement) ? shadow.activeElement : null
     const imageSelection = imageFocus instanceof HTMLInputElement || imageFocus instanceof HTMLTextAreaElement
       ? { start: imageFocus.selectionStart, end: imageFocus.selectionEnd, direction: imageFocus.selectionDirection } : null
+    const gameFocus = shadow.activeElement instanceof HTMLElement && gameWorkspaceHost?.contains(shadow.activeElement) ? shadow.activeElement : null
+    const gameSelection = gameFocus instanceof HTMLInputElement || gameFocus instanceof HTMLTextAreaElement
+      ? { start: gameFocus.selectionStart, end: gameFocus.selectionEnd, direction: gameFocus.selectionDirection } : null
     if (!preserveFlowHost) disposeFlowCanvas()
     el.innerHTML = html
     if (preserveFlowHost) {
@@ -1310,6 +1254,27 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       if (replacement) replacement.replaceWith(preserveFlowHost)
     }
     if (uiDesignHost && uiDesignView) $id('wb-ui-design-host')?.replaceWith(uiDesignHost)
+    if (gameProduct) {
+      const replacement = $id('wb-game-workspace-host')
+      if (replacement && gameWorkspaceHost && gameWorkspace) replacement.replaceWith(gameWorkspaceHost)
+      else if (replacement) {
+        gameWorkspaceHost = replacement
+        gameWorkspaceScope = gameScope
+        gameWorkspace = createGameWorkspace(replacement, {
+          apiBase: API, product: gameProduct, ensureStyles: css => ensureExtraCss(css), toast,
+          onRequestChange: context => {
+            if (context.productId !== gameProductId || !gameProducts().some(item => item.id === context.productId)) throw new Error('项目上下文已变化，请重新打开修改')
+            productSelected = context.productId
+            openAiDispatch('product', `游戏修改请求\nproductId: ${context.productId}\nslug: ${context.slug}\n基准 buildId: ${context.buildId}\n工作区: ${gameProduct.workspacePath}\n\n${context.summary}\n\n先读取当前工程和能力范围，解释改动方案。源码候选仅替换 game.js、不改变规则合同；核验通过会直接采用，失败回退。修改前检查基准版本，保留可恢复版本，完成后报告实际构建和验证结果。`)
+          },
+          openDesign: () => { productSelected = gameProduct.id; openFeature('product') },
+          openImages: () => openProductImages(gameProduct),
+          openWorkflow: () => { productSelected = gameProduct.id; openFeature('flow') },
+        })
+        gameWorkspace.mount()
+        try { localStorage.setItem(lastGameKey, JSON.stringify({ project: ui.project, productId: gameProduct.id })) } catch { /* 本机恢复不可用不影响工程保存 */ }
+      }
+    }
     if (imageProduct) {
       const replacement = $id('wb-product-images-host')
       if (replacement && productImagesHost && productImagesView) replacement.replaceWith(productImagesHost)
@@ -1328,17 +1293,18 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
         imageFocus.setSelectionRange(imageSelection.start, imageSelection.end, imageSelection.direction ?? undefined)
       }
     }
+    if (gameFocus?.isConnected) {
+      gameFocus.focus({ preventScroll: true })
+      if (gameSelection?.start != null && gameSelection.end != null && (gameFocus instanceof HTMLInputElement || gameFocus instanceof HTMLTextAreaElement)) gameFocus.setSelectionRange(gameSelection.start, gameSelection.end, gameSelection.direction ?? undefined)
+    }
     bindContentInputs()
     const projectPicker = $id<HTMLSelectElement>('wb-project')
     projectPicker?.addEventListener('change', () => {
-      ui.project = projectPicker.value
-      uiImageProductId = ''
-      const card = projectByPath(ui.project)
-      if (card?.product !== undefined) productSelected = card.product.id
-      if (card?.bugProject !== undefined) bugProjectFilter = card.bugProject.id
-      db.settings.project = ui.project === 'none' ? '' : ui.project
-      scheduleSave()
-      renderAll()
+      setProject(projectPicker.value)
+    })
+    $id<HTMLSelectElement>('wb-game-product')?.addEventListener('change', event => {
+      gameProductId = (event.currentTarget as HTMLSelectElement).value
+      renderContent()
     })
     $id<HTMLSelectElement>('wb-ui-image-product')?.addEventListener('change', event => {
       uiImageProductId = (event.currentTarget as HTMLSelectElement).value
@@ -1755,6 +1721,52 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   }
 
   /* ---------- 门户（项目 / 产品 + 功能入口，兼项目管理） ---------- */
+  function gameProducts(): Product[] {
+    if (['all', 'none', ''].includes(ui.project)) return []
+    return uiImageProducts().filter(product => !product.archivedAt && !!product.workspacePath)
+  }
+
+  function renderGameShell(): string {
+    const candidates = gameProducts()
+    const selected = candidates.find(product => product.id === gameProductId)
+    const picker = `<select id="wb-game-product" aria-label="游戏所属产品"><option value="">请选择产品</option>${candidates.map(product => `<option value="${esc(product.id)}" ${selected?.id === product.id ? 'selected' : ''}>${esc(product.name)}</option>`).join('')}</select>`
+    return `<div class="wb-game-context"><div><span class="eyebrow">项目 / 游戏工作区</span><b>${esc(projectLabel(ui.project))}</b></div><div class="wb-context-pickers">${projectSelect()}${picker}</div></div>${selected ? '<div id="wb-game-workspace-host"></div>' : `<div class="wb-shell-empty"><div class="eyebrow">先确定本次工作的归属</div><h2>${['all', 'none', ''].includes(ui.project) ? '选择一个项目' : candidates.length ? '选择一个产品，进入游戏' : '这个项目尚无可用的产品工作区'}</h2><p>概览、设计、制作、试玩与交付会围绕同一个游戏和固定构建展开。</p><p class="muted">${candidates.length > 1 ? '此项目包含多个产品，请明确选择。' : '工程写入使用所选产品已登记的本地工作区。'}</p><button class="btn" data-view="projects">返回项目</button></div>`}`
+  }
+
+  function renderStart(): string {
+    const saved = lastGame()
+    const resume = saved && projectByPath(saved.project)?.products.find(product => product.id === saved.productId && !!product.workspacePath)
+    const cards = projectCards()
+    return `<div class="wb-start" data-workbench-page="start"><div class="view-head"><div><div class="eyebrow">创作工作台 / 开始</div><h1 class="page-title">继续把游戏做出来</h1><div class="page-sub">先得到可玩版本，再围绕一次真实试玩改进它。</div></div><button class="btn" data-act="portal-load">${ic('refresh', 13)}刷新</button></div>
+      <section class="wb-start-hero"><div><div class="eyebrow">${resume ? '继续上次的项目' : '从一个可玩起点开始'}</div><h2>${resume ? esc(resume.name) : '选项目，进入游戏工作区'}</h2><p>${resume ? esc(projectLabel(saved!.project)) + ' · 恢复上次的游戏与工作面' : '模板创建、源码候选、版本、试玩和导出，集中在一个地方。'}</p><button class="btn-primary" ${resume ? `data-act="project-game-open" data-id="${esc(saved!.project)}" data-product="${esc(resume.id)}"` : 'data-view="projects"'}>${ic('play', 15)}${resume ? '继续创作' : '选择项目'}</button></div><div class="wb-start-path"><span>设计目标</span><i>→</i><span>可玩版本</span><i>→</i><span>试玩改进</span><small>先支持本地 Web 游戏；小说、AI 漫剧后续再说。</small></div></section>
+      <div id="wb-workflow-summary"></div>
+      <div class="portal-sec-head"><h2>项目</h2><button class="btn" data-view="projects">查看全部 ${cards.length} 个</button></div><div class="wb-project-grid">${cards.slice(0, 3).map(card => renderProjectCard(card)).join('') || '<div class="wb-shell-empty"><p>还没有项目，先关联一个本地工作区。</p><button class="btn" data-act="portal-new">新建项目 / 产品</button></div>'}</div>
+      <div class="wb-start-links"><button class="btn" data-view="materials">查找素材</button><button class="btn" data-view="wftpl">高级工作流</button><button class="btn" data-view="more">其他工具与旧入口</button></div></div>`
+  }
+
+  function renderProjectCard(card: ProjectCard): string {
+    return `<article class="wb-project-card"><div class="eyebrow">${card.products.length} 个产品 · ${card.tests.length} 个测试项目</div><h2>${esc(card.name)}</h2><p class="wb-project-path">${esc(card.path.startsWith('prj:') ? '尚未关联工作区' : card.path)}</p><div class="wb-project-products">${card.products.map(product => `<div><span>${esc(product.name)}</span><button class="btn" data-act="project-game-open" data-id="${esc(card.path)}" data-product="${esc(product.id)}" ${product.workspacePath ? '' : 'disabled title="请先在产品设计中关联工作区"'}>进入游戏 ${ic('arrowR', 12)}</button></div>`).join('') || '<p class="muted">尚无产品，可先打开已有设计资料。</p>'}</div><div class="wb-project-foot"><button class="btn" data-act="portal-enter" data-id="${esc(card.path)}" data-view="product">设计资料</button><button class="btn" data-act="portal-enter" data-id="${esc(card.path)}" data-view="test">测试</button><button class="btn" data-act="project-game-open" data-id="${esc(card.path)}">工作区 ${ic('arrowR', 12)}</button></div></article>`
+  }
+
+  function renderProjects(): string {
+    const query = ui.q.trim().toLocaleLowerCase()
+    const cards = projectCards().filter(card => !query || `${card.name} ${card.path} ${card.products.map(product => product.name).join(' ')}`.toLocaleLowerCase().includes(query))
+    return `<div data-workbench-page="projects"><div class="view-head"><div><div class="eyebrow">项目</div><h1 class="page-title">正在制作的世界</h1><div class="page-sub">选择明确的产品与工作区，打开自己的游戏版本。</div></div><button class="btn" data-act="portal-new">${ic('plus', 13)}新建项目 / 产品</button></div><div class="feature-project-context"><span>项目范围</span>${projectSelect()}<button class="btn" data-view="game">打开当前范围</button></div><div class="wb-project-grid">${cards.map(card => renderProjectCard(card)).join('') || '<div class="wb-shell-empty">没有匹配的项目。请调整搜索或新建项目。</div>'}</div></div>`
+  }
+
+  function renderMaterials(): string {
+    return `<div data-workbench-page="assets"><div class="view-head"><div><div class="eyebrow">素材</div><h1 class="page-title">找到素材，再确认用途</h1><div class="page-sub">沿用图片与游戏各自的原始记录。选用、归档和被构建实际引用分别显示。</div></div></div><div class="feature-project-context"><span>目标项目</span>${projectSelect()}</div><div class="wb-project-grid"><article class="wb-project-card"><h2>项目图片</h2><p>本地导入、生成候选、比较与选用。打开后明确选择所属产品。</p><button class="btn" data-act="materials-images">打开图片画廊</button></article><article class="wb-project-card"><h2>游戏工程素材</h2><p>在游戏工作区查看模板能力和当前版本。Cinderwatch 暂不支持外部图片或 GLB 槽位。</p><button class="btn" data-view="game">选择游戏工程</button></article><article class="wb-project-card"><h2>Unity 已购资产</h2><p>浏览本机已购库。Unity 包不默认视为可用于 Web 游戏的素材。</p><button class="btn" data-view="assets">打开 Unity 资产库</button></article></div></div>`
+  }
+
+  function renderMore(): string {
+    const groups: Array<[string, Array<[Ui['view'], string, string]>]> = [
+      ['我的工作', [['list', '任务清单', '行动、子任务与记录'], ['board', '看板', '按状态管理任务'], ['calendar', '日历', '日程和安排'], ['timeline', '时间轴', '计划与时间'], ['matrix', '四象限', '优先级'], ['focus', '专注', '任务与计时'], ['stats', '统计', '工作复盘']]],
+      ['项目工具', [['product', '产品设计', '导图、模块与设计文档'], ['ui', '界面设计', '页面与主题'], ['demo', 'DEMO', '模板与页面原型'], ['bugs', 'Bug 管理', '原始缺陷记录'], ['test', '测试', '用例、执行与报告'], ['idea', '灵感', '探索和备选方案'], ['wftpl', '工作流模板', '高级编排']]],
+      ['资料与兼容入口', [['notes', '记事本', '保留现有笔记和目录'], ['news', '新闻', '主题订阅与检索'], ['legacy', '旧版门户', '保留旧功能布局作为过渡入口']]],
+    ]
+    return `<div data-workbench-page="more"><div class="view-head"><div><div class="eyebrow">更多</div><h1 class="page-title">工具，按需打开</h1><div class="page-sub">已有任务、资料和配置继续使用原来的数据。</div></div>${projectSelect()}</div>${groups.map(([title, items]) => `<section class="wb-more-group"><h2>${title}</h2><div class="wb-tool-grid">${items.map(([view, name, hint]) => `<button class="wb-tool-link" data-view="${view}"><b>${name}</b><small>${hint}</small></button>`).join('')}</div></section>`).join('')}<details class="portal-feature-disclosure"><summary><b>智能体团队</b><span>复杂任务再配置职责与协作</span></summary>${agentPanel.sectionHtml()}</details></div>`
+  }
+
   function renderPortal(): string {
     const cards = projectCards()
     const all = ui.project === 'all'
@@ -1881,26 +1893,8 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     return uiDesignView
   }
 
-  /** 当前项目 id（provider 缺失时回落到第一个项目）。 */
-  function currentProjectId(): string {
-    const cards = projectCards()
-    const hit = cards.find(c => c.path === ui.project)
-    if (hit?.projectId !== undefined && hit.projectId !== '') return hit.projectId
-    /* 兜底 1：产品页已选中某个产品时，用该产品的工作区去匹配项目，
-       这样「产品页 → UI 设计」跳转后不会误报「未选项目」。 */
-    const product = productOf(productSelected)
-    if (product !== undefined) {
-      if (product.projectId !== undefined && product.projectId !== '') return product.projectId
-      const byProductWs = cards.find(c => c.path === product.workspacePath && c.projectId !== undefined && c.projectId !== '')
-      if (byProductWs?.projectId !== undefined) return byProductWs.projectId
-    }
-    /* 兜底 2：当前选择不是统一项目（all/none/任务路径）时，取第一个有项目的卡片 */
-    const first = cards.find(c => c.projectId !== undefined && c.projectId !== '')
-    if (first?.projectId !== undefined && first.projectId !== '') return first.projectId
-    /* 兜底 3：projectCards 依赖产品/Bug/测试都已加载；在 UI 设计/DEMO 视图下这些可能还没拉，
-       直接用已加载的统一项目清单 projects 取第一个，避免「明明有项目却报未选项目」。 */
-    return projects[0]?.id ?? ''
-  }
+  /** 写入与派发只接受当前明确选择的统一项目。 */
+  function currentProjectId(): string { return selectedProjectId() }
 
   /** 统一项目清单（UI 设计/DEMO 的 projectId 兜底依赖它）。 */
   async function loadProjectsList(): Promise<void> {
@@ -4614,9 +4608,11 @@ ${lines}
   }
   function renderProduct(): string {
     const product = productOf(productSelected)
+    const available = ui.project === 'all' ? products : uiImageProducts()
+    const chooser = `<div class="feature-project-context">${projectSelect()}<select id="wb-product-select" class="bug-project-select" aria-label="当前设计产品"><option value="">选择产品…</option>${available.map(item => `<option value="${esc(item.id)}" ${item.id === product?.id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></div>`
     const header = `<div class="view-head"><div><div class="eyebrow">产品设计</div><h1 class="page-title">产品</h1>
       <div class="page-sub">导图记录功能，AI 生成设计笔记与多风格 Demo；产物保存到关联工作区</div><div class="head-pills"><span><b>${products.length}</b> 产品</span><span><b>${productModules.length}</b> 模块</span><span><b>${projectDemos.length}</b> DEMO</span></div></div>
-      <div style="display:flex;gap:6px"><button class="btn" data-act="goto-ui">${ic('layout', 13)}UI 设计</button><button class="btn" data-act="goto-demo">${ic('play', 13)}DEMO</button><button class="btn" data-act="ai-dispatch" data-kind="product">${ic('spark', 13)}AI 协同</button><button class="btn-primary" data-act="product-new">${ic('plus', 14)}新建产品</button></div></div>`
+      <div style="display:flex;gap:6px"><button class="btn" data-act="goto-ui">${ic('layout', 13)}UI 设计</button><button class="btn" data-act="goto-demo">${ic('play', 13)}DEMO</button><button class="btn" data-act="ai-dispatch" data-kind="product">${ic('spark', 13)}AI 协同</button><button class="btn-primary" data-act="product-new">${ic('plus', 14)}新建产品</button></div></div>${chooser}`
     if (productError !== '') {
       return header + `<div class="news-banner">${ic('flag', 13)}<span>产品读取失败：${esc(productError)}</span><button class="btn" data-act="product-refresh">重试</button></div>`
     }
@@ -4625,7 +4621,6 @@ ${lines}
     }
     if (!product) return header
     const toolbar = `<div class="product-toolbar">
-      <select id="wb-product-select" class="bug-project-select"><option value="">选择产品…</option>${products.map(p => `<option value="${p.id}" ${p.id === product.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
       <button class="icon-btn" data-act="product-edit" title="编辑产品">${ic('edit', 14)}</button>
       <span class="product-ws">${ic('folder', 12)}${esc(product.workspacePath || '未关联工作区')}</span>
       <label class="pm-archived-toggle" title="显示已归档的产品/模块/文档"><input type="checkbox" id="wb-show-archived" ${showArchived ? 'checked' : ''}> 显示已归档</label>
@@ -4918,17 +4913,10 @@ ${lines}
       productModules = Array.isArray(pData.modules) ? pData.modules : []
       notes = Array.isArray(nData.notes) ? nData.notes : notes
       notebooks = Array.isArray(nData.notebooks) ? nData.notebooks : notebooks
-      if (productSelected === null || productOf(productSelected) === undefined) {
-        /* 1.16：默认产品必须跟随「当前项目」的工作区，不能取 products[0]。
-           products 按 updated_at 倒序，products[0] 往往是最近改过的那个，
-           与用户在门户选中的项目无关——会导致「界面显示 A 项目，实际派发给 B 产品」。
-           实测：默认安捷邻却派发给「宠物上门喂养」（其工作区在 测试产物/ai-e2e）。 */
-        const curProjectId = currentProjectId()
-        const curProject = projects.find(p => p.id === curProjectId)
-        const byWorkspace = curProject === undefined
-          ? undefined
-          : products.find(p => String(p.workspacePath ?? '') === String(curProject.workspacePath ?? ''))
-        productSelected = byWorkspace?.id ?? products[0]?.id ?? null
+      const scopedProducts = ['all', 'none', ''].includes(ui.project) ? [] : uiImageProducts()
+      if (!scopedProducts.some(product => product.id === productSelected)) {
+        productSelected = scopedProducts.length === 1 ? scopedProducts[0].id : null
+        productPicked = new Set()
       }
       await loadProductMaps()
       const product = productOf(productSelected)
@@ -6333,7 +6321,7 @@ ${common}
         : '**按模块分册**：为每个模块各写一份，参数 { productId:"' + product.id + '", kind:"product_design", moduleId:"该模块 id", title:"<模块名> · 产品设计分册", content:"完整 Markdown" }；最后再写一份总纲（moduleId 留空，title 为产品名 + 产品设计总纲）。'}
 2. 产品设计文档结构：产品定位与目标用户 / 整体信息架构（跨模块）/ 核心用户旅程（跨模块串接）/ 模块职责矩阵 / 模块间依赖与数据流 / 分阶段路线图 / 全局性约束（权限·合规·性能）/ 风险与对策 / 整体验收标准。\n3. **严禁把模块设计文档整段复制过来**；产品级只写「跨模块」的内容，模块内的细节引用其文档即可。\n4. 与导图不一致的地方要显式列出「导图未覆盖，待确认」。\n5. 完成后汇报文档清单。`
     }
-    return `【阶段 4／交叉检查与以导图为基准的修复】${product.name}\n\n你是产品架构评审人。请对「导图 ↔ 模块 ↔ 业务模块设计文档 ↔ 产品设计文档」做四方交叉检查。\n\n${base}\n\n已有模块设计文档：\n${docList}\n\n已知模块：\n${productModules.filter(m => m.productId === product.id).slice(0, 80).map(m => `- [${m.kind}] ${m.name}（id:${m.id}${m.noteId ? `, note:${m.noteId}` : '，无文档'}）`).join('\n') || '（尚无模块）'}\n\n要求：\n1. 逐项比对，列出四类偏差：\n   A. 导图有、但模块缺失（结构缺口）\n   B. 模块有、但导图没有（多余模块 / 未回填导图）\n   C. 有模块但无业务模块设计文档\n   D. 产品设计文档与模块设计文档互相矛盾（职责重叠、边界冲突、指标不一致）\n2. **以导图为唯一事实基准**：\n   - A 类：用 workbench_module_publish 补模块；若属结构遗漏，也建议在导图里补节点（给出节点 JSON 建议，不要直接改图）。\n   - B 类：标记为「待确认」，不要自删。\n   - C 类：为缺失模块补写 module_design 文档（workbench_product_note_publish, kind:"module_design", moduleId）。\n   - D 类：以导图为准改写文档，冲突处在文档里加「⚠️ 与模块 X 冲突，已按导图修正」。\n3. 最后输出一份检查报告（Markdown 表格：偏差类型 / 位置 / 处理动作 / 是否需人工确认），并用 workbench_product_note_publish 存为 kind:"product_design"、title:"${product.name} · 设计一致性检查报告"（moduleId 留空）。\n4. 绝不修改导图本身，只通过工具改模块与文档。`
+    return `【阶段 4／交叉检查与以导图为基准的修复】${product.name}\n\n你是产品架构评审人。请对「导图 ↔ 模块 ↔ 业务模块设计文档 ↔ 产品设计文档」做四方交叉检查。\n\n${base}\n\n已有模块设计文档：\n${docList}\n\n已知模块：\n${productModules.filter(m => m.productId === product.id).slice(0, 80).map(m => `- [${m.kind}] ${m.name}（id:${m.id}${m.noteId ? `, note:${m.noteId}` : '，无文档'}）`).join('\n') || '（尚无模块）'}\n\n要求：\n1. 逐项比对，列出四类偏差：\n   A. 导图有、但模块缺失（结构缺口）\n   B. 模块有、但导图没有（多余模块 / 未回填导图）\n   C. 有模块但无业务模块设计文档\n   D. 产品设计文档与模块设计文档互相矛盾（职责重叠、边界冲突、指标不一致）\n2. **以导图为唯一事实基准**：\n   - A 类：用 workbench_module_publish 补模块；若属结构遗漏，也建议在导图里补节点（给出节点 JSON 建议，不要直接改图）。\n   - B 类：标记为「待确认」，不要自删。\n   - C 类：为缺失模块补写 module_design 文档（workbench_product_note_publish, kind:"module_design", moduleId）。\n   - D 类：以导图为准改写文档，冲突处在文档里加「⚠️ 与模块 X 冲突，已按导图修正」。\n3. 最后输出一份检查报告（Markdown 表格：偏差类型 / 位置 / 处理动作 / 是否需人工确认），并用 workbench_product_note_publish 存为 kind:"product_design"、docKey:"pdr:${product.id}"、title:"${product.name} · 设计一致性检查报告"（moduleId 留空；报告只更新此 docKey，不得覆盖正文 pd:${product.id}）。\n4. 绝不修改导图本身，只通过工具改模块与文档。`
     if (stage === 'ui_design') {
       return `【阶段 5／UI 设计（页面清单 + 规范）】${product.name}
 
@@ -6683,7 +6671,7 @@ ${docList}
   /** 设计文档类型徽标（普通笔记不显示）。 */
   function noteKindBadge(note: Note): string {
     if (note.kind === 'module_design') return '<span class="note-kind module">业务模块设计</span>'
-    if (note.kind === 'product_design') return '<span class="note-kind product">产品设计</span>'
+    if (note.kind === 'product_design') return `<span class="note-kind product">${note.docKey?.startsWith('pdr:') ? '一致性报告' : '产品设计'}</span>`
     if (note.kind === 'feature_design') return '<span class="note-kind feature">功能设计</span>'
     return ''
   }
@@ -7040,7 +7028,7 @@ ${docList}
       products = products.filter(p => p.id !== id)
       if (uiImageProductId === id) uiImageProductId = ''
       productDemos = productDemos.filter(d => d.productId !== id)
-      productSelected = products[0]?.id ?? null
+      if (productSelected === id) productSelected = null
       if (product?.workspacePath !== undefined && ui.project === product.workspacePath) ui.project = 'all'
       else if (ui.project !== 'all' && ui.project !== 'none' && projectByPath(ui.project) === undefined) ui.project = 'all'
       closeModal()
@@ -7496,7 +7484,13 @@ ${mapLine}
     }
     if (productTab === 'modules' || productTab === 'notes') ensureProductChat()
     $id<HTMLSelectElement>('wb-product-select')?.addEventListener('change', e => {
-      productSelected = (e.currentTarget as HTMLSelectElement).value
+      const pickedId = (e.currentTarget as HTMLSelectElement).value
+      const picked = productOf(pickedId)
+      if (picked) {
+        const project = projects.find(item => item.id === picked.projectId)
+        setProject(project ? project.workspacePath || `prj:${project.id}` : picked.workspacePath || 'none', false)
+      }
+      productSelected = picked?.id ?? null
       productNodeSelected = null
       productDemoSelected = ''
       productMapSelected = ''
@@ -7504,7 +7498,7 @@ ${mapLine}
       productPicked = productDefaultPicked(productOf(productSelected))
       void loadProductMaps().then(() => {
         productPicked = productDefaultPicked(productOf(productSelected))
-        renderContent()
+        renderAll()
       })
     })
     $id<HTMLSelectElement>('wb-map-scope')?.addEventListener('change', e => {
@@ -7567,7 +7561,8 @@ ${mapLine}
       testRuns = Array.isArray(tData.runs) ? tData.runs : []
       if (pRes.ok) { const p = await pRes.json() as any; products = Array.isArray(p.products) ? p.products : products; productDemos = Array.isArray(p.demos) ? p.demos : productDemos; productModules = Array.isArray(p.modules) ? p.modules : productModules }
       if (nRes.ok) { const n = await nRes.json() as any; notes = Array.isArray(n.notes) ? n.notes : notes; notebooks = Array.isArray(n.notebooks) ? n.notebooks : notebooks }
-      if (testProjectSelected === null || testProjectOf(testProjectSelected) === undefined) testProjectSelected = testProjects[0]?.id ?? null
+      const scopedTests = projectByPath(ui.project)?.tests ?? []
+      if (!scopedTests.some(project => project.id === testProjectSelected)) testProjectSelected = scopedTests.length === 1 ? scopedTests[0].id : null
       if (testRunSelected === null || testRunOf(testRunSelected) === undefined) testRunSelected = testRunsOf(testProjectOf(testProjectSelected))[0]?.id ?? null
       testError = ''
     } catch (cause) { if (!silent) testError = String((cause as Error).message ?? cause) }
@@ -8070,15 +8065,17 @@ ${lines}`
 
   function renderTests(): string {
     const project = testProjectOf(testProjectSelected)
-    const header = `<div class="view-head"><div><div class="eyebrow">测试</div><h1 class="page-title">测试</h1><div class="page-sub">AI 生成用例 → 执行 → 录入 Bug → 回归 → 动画报告</div><div class="head-pills"><span><b>${testCases.length}</b> 用例</span><span><b>${testRuns.length}</b> 运行</span><span><b>${testProjects.length}</b> 项目</span></div></div><div style="display:flex;gap:6px"><button class="btn" data-act="ai-dispatch" data-kind="test">${ic('spark', 13)}AI 协同</button><button class="btn" data-act="archive-center">归档中心</button><button class="btn-primary" data-act="test-new">${ic('plus', 14)}新建测试项目</button></div></div>`
+    const available = ui.project === 'all' ? testProjects : projectByPath(ui.project)?.tests ?? []
+    const chooser = `<div class="feature-project-context">${projectSelect()}<select id="wb-test-select" class="bug-project-select" aria-label="当前测试项目"><option value="">选择测试项目…</option>${available.map(item => `<option value="${esc(item.id)}" ${item.id === project?.id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></div>`
+    const header = `<div class="view-head"><div><div class="eyebrow">测试</div><h1 class="page-title">测试</h1><div class="page-sub">AI 生成用例 → 执行 → 录入 Bug → 回归 → 动画报告</div><div class="head-pills"><span><b>${testCases.length}</b> 用例</span><span><b>${testRuns.length}</b> 运行</span><span><b>${testProjects.length}</b> 项目</span></div></div><div style="display:flex;gap:6px"><button class="btn" data-act="ai-dispatch" data-kind="test">${ic('spark', 13)}AI 协同</button><button class="btn" data-act="archive-center">归档中心</button><button class="btn-primary" data-act="test-new">${ic('plus', 14)}新建测试项目</button></div></div>${chooser}`
     if (testError !== '') return header + `<div class="news-banner"><span>读取失败：${esc(testError)}</span><button class="btn" data-act="test-refresh">重试</button></div>`
     if (testProjects.length === 0) return header + `<div class="notes-empty bug-empty"><div class="ne-icon">${ic('test', 22)}</div><b>还没有测试项目</b><span>创建项目并关联工作区，AI 生成用例后逐条测试。</span><button class="btn-primary" data-act="test-new">${ic('plus', 14)}新建测试项目</button></div>`
-    if (!project) return header
+    if (!project) return header + '<div class="wb-shell-empty">请选择明确的测试项目，查看用例与执行记录。</div>'
     const tabLabel = (t: string): string => t === 'plans' ? `计划${testPlans.length > 0 ? `（${testPlans.length}）` : ''}`
       : t === 'cases' ? `用例${pendingRegression.length > 0 ? ` · 待回归 ${pendingRegression.length}` : ''}`
       : t === 'run' ? '执行' : t === 'report' ? '报告' : '部署'
     const tabs = `<div class="product-tabs">${(['plans', 'cases', 'run', 'report', 'deploy'] as const).map(t => `<button class="${testTab === t ? 'active' : ''}" data-act="test-tab" data-tab="${t}">${tabLabel(t)}</button>`).join('')}</div>`
-    const toolbar = `<div class="product-toolbar"><select id="wb-test-select" class="bug-project-select"><option value="">选择测试项目…</option>${testProjects.map(p => `<option value="${p.id}" ${p.id === project.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select><button class="icon-btn" data-act="test-edit" title="编辑">${ic('edit', 14)}</button><span class="product-ws">${ic('folder', 12)}${esc(project.workspacePath || '未关联工作区')}</span><button class="icon-btn" data-act="test-refresh" title="刷新">${ic('refresh', 14)}</button></div>`
+    const toolbar = `<div class="product-toolbar"><button class="icon-btn" data-act="test-edit" title="编辑">${ic('edit', 14)}</button><span class="product-ws">${ic('folder', 12)}${esc(project.workspacePath || '未关联工作区')}</span><button class="icon-btn" data-act="test-refresh" title="刷新">${ic('refresh', 14)}</button></div>`
     let body = ''
     if (testTab === 'plans') {
       const cards = testPlans.length === 0
@@ -8166,7 +8163,15 @@ ${lines}`
     } catch (cause) { toast(`删除失败：${String((cause as Error).message ?? cause)}`) }
   }
   function bindTests(): void {
-    $id<HTMLSelectElement>('wb-test-select')?.addEventListener('change', e => { testProjectSelected = (e.currentTarget as HTMLSelectElement).value; testRunSelected = null; testTab = 'cases'; renderContent() })
+    $id<HTMLSelectElement>('wb-test-select')?.addEventListener('change', e => {
+      const pickedId = (e.currentTarget as HTMLSelectElement).value
+      const picked = testProjectOf(pickedId)
+      if (picked) {
+        const project = projects.find(item => item.id === picked.projectId)
+        setProject(project ? project.workspacePath || `prj:${project.id}` : picked.workspacePath || 'none', false)
+      }
+      testProjectSelected = picked?.id ?? null; testRunSelected = null; testTab = 'cases'; renderAll()
+    })
     shadow.querySelectorAll<HTMLInputElement>('[data-test-note]').forEach(input => input.addEventListener('change', e => {
       const caseId = (e.currentTarget as HTMLInputElement).getAttribute('data-test-note') ?? ''
       const run = testRunOf(testRunSelected); if (!run) return
@@ -8178,7 +8183,7 @@ ${lines}`
   function renderDetail(): void {
     const el = detail()
     if (!el) return
-    const show = !['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl', 'workflows', 'wfrun', 'ui', 'demo'].includes(ui.view)
+    const show = !['portal', 'projects', 'game', 'materials', 'more', 'legacy', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl', 'workflows', 'wfrun', 'ui', 'demo'].includes(ui.view)
     el.classList.toggle('hide', !show)
     if (!show) { el.innerHTML = ''; return }
     const t = selectedTask()
@@ -8780,6 +8785,14 @@ ${lines}`
       if (act === 'overlay') { if (target === actEl) closeModal(); return }
       if (act === 'close-modal') { closeModal(); return }
       if (act === 'portal-home') { openPortal(); return }
+      if (act === 'project-game-open') {
+        setProject(actEl.getAttribute('data-id') ?? 'all', false)
+        const requestedProduct = actEl.getAttribute('data-product') ?? ''
+        gameProductId = gameProducts().some(product => product.id === requestedProduct) ? requestedProduct : ''
+        openFeature('game')
+        return
+      }
+      if (act === 'materials-images') { uiDesignSection = 'images'; uiImageProductId = ''; openFeature('ui'); return }
       if (act === 'portal-project') { setProject(actEl.getAttribute('data-id') ?? 'all'); return }
       if (act === 'portal-open') { openFeature((actEl.getAttribute('data-view') ?? 'list') as Ui['view']); return }
       if (act === 'portal-enter') {
@@ -9325,16 +9338,8 @@ ${lines}`
     const viewEl = target.closest('[data-view]')
     if (viewEl) {
       const next = (viewEl.getAttribute('data-view') ?? 'board') as Ui['view']
-      if (ui.view === 'notes' && next !== 'notes') void flushNoteSave()
-      ui.view = next
-      renderAll()
-      if (ui.view === 'portal') void refreshPortal()
-      if (ui.view === 'news') void loadNews()
-      if (ui.view === 'notes') void loadNotes()
-      if (ui.view === 'bugs') void loadBugs()
-      if (ui.view === 'product') void loadProducts()
-      if (ui.view === 'ui') void loadUiContext()
-      if (ui.view === 'test') void loadTests()
+      openFeature(next)
+      if (next === 'portal') void refreshPortal()
       return
     }
     const productNodeFoldEl = target.closest('[data-product-node-fold]') as HTMLElement | null
@@ -9643,6 +9648,9 @@ ${lines}`
   return {
     destroy(): void {
       workbenchDisposed = true
+      gameWorkspace?.destroy()
+      gameWorkspace = null
+      gameWorkspaceHost = null
       unsubscribeWorkflow()
       window.removeEventListener(WORKFLOW_NAVIGATION_EVENT, onWorkflowNavigation)
       disposeFlowCanvas()

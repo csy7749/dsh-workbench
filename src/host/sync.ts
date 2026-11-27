@@ -152,6 +152,10 @@ function noteRow(row: any): any {
     pinned: Number(row.pinned) === 1,
     filePath: row.file_path ?? '',
     mapId: row.map_id ?? '',
+    kind: row.kind ?? '',
+    nodeId: row.node_id ?? '',
+    moduleId: row.module_id ?? '',
+    docKey: row.doc_key ?? '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -417,6 +421,10 @@ function applyUpsert(db: any, entity: SyncEntity, id: string, row: any, at: stri
         tags: list(merged.tags),
         pinned: merged.pinned === true,
         mapId: str(merged.mapId),
+        kind: str(merged.kind),
+        nodeId: str(merged.nodeId),
+        moduleId: str(merged.moduleId),
+        docKey: str(merged.docKey),
       })
       /* saveNote 会写服务器当前时间；同步场景以推送的 updatedAt 作为 LWW 依据。 */
       db.prepare('UPDATE notes SET updated_at = ? WHERE id = ?').run(at, id)

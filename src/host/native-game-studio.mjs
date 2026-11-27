@@ -443,6 +443,31 @@ export function createNativeGameStudio({ quotas: configured = {} } = {}) {
   if (Object.values(quotas).some(value => !Number.isSafeInteger(value) || value < 0)) fail('game_quota_invalid')
   return {
     readBuild,
+    listProjects({ workspaceRoot, productId }) {
+      validateProduct(productId)
+      if (typeof workspaceRoot !== 'string' || !isAbsolute(workspaceRoot)) fail('game_workspace_invalid')
+      const workspace = realpathSync(workspaceRoot)
+      directory(workspace)
+      const games = join(workspace, 'games')
+      try { directory(games) } catch (error) { if (error.code === 'ENOENT') return []; throw error }
+      const projects = []
+      for (const entry of readdirSync(games, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+        const slug = entry.name
+        let record
+        // A shared workspace is not shared ownership. Unregistered directories,
+        // unsafe names and another product's games are never exposed here.
+        try { validateSlug(slug); record = registration(join(games, slug), productId) } catch { continue }
+        try {
+          const args = { workspaceRoot: workspace, productId, slug }
+          const current = currentInput(join(games, slug))
+          const built = this.listBuilds(args).find(item => item.valid && item.buildCurrent)
+          projects.push({ slug, projectId: record.projectId, title: current.manifest?.title ?? slug, template: current.manifest?.templateId ?? '', buildCurrent: !!built,
+            ...(built ? { buildId: built.buildId, bytes: built.bytes } : {}) })
+        } catch (error) { projects.push({ slug, projectId: record.projectId, title: slug, error: /^(?:game|product)_[a-z0-9_]+$/.test(error.message) ? error.message : 'game_project_unavailable' }) }
+      }
+      return projects
+    },
     currentState(args) {
       const p = registeredProject(args)
       return { productId: args.productId, slug: args.slug, projectId: p.record.projectId, project: p.portable(p.project), ...currentInput(p.project) }

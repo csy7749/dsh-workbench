@@ -1556,34 +1556,36 @@ CREATE TABLE IF NOT EXISTS products (
     const notebook = this.db.prepare('SELECT id, name, workspace_path FROM notebooks WHERE id = ?').get(wanted) as any
     const notebookId = notebook?.id ? String(notebook.id) : this.defaultNotebookId()
     const nb = notebook?.id ? notebook : this.db.prepare('SELECT id, name, workspace_path FROM notebooks WHERE id = ?').get(notebookId) as any
-    const mapId = str(input?.mapId)
-    const kind = ['module_design', 'product_design', 'feature_design', 'ui_design', 'test_design'].includes(str(input?.kind)) ? str(input.kind) : ''
-    const nodeId = str(input?.nodeId).slice(0, 64)
-    const moduleId = str(input?.moduleId).slice(0, 64)
-    /* doc_key：同 scope 的唯一键（重跑生成 = 更新同一篇）。未显式给出时按 kind+归属自动推导。 */
-    let docKey = str(input?.docKey).slice(0, 160)
-    if (docKey === '' && kind !== '') {
+    let existing = this.db.prepare('SELECT id, created_at, file_path, map_id, kind, node_id, module_id, doc_key FROM notes WHERE id = ?').get(id) as any
+    const owns = (key: string): boolean => Object.prototype.hasOwnProperty.call(input ?? {}, key)
+    /* 已有文档省略身份字段时保留原值；显式空串才清除。新文档才推导默认 docKey。 */
+    let docKey = str(owns('docKey') ? input.docKey : existing?.doc_key).slice(0, 160)
+    if (existing === undefined && !owns('docKey') && docKey === '') {
+      const kind = str(input?.kind), mapId = str(input?.mapId)
+      const nodeId = str(input?.nodeId).slice(0, 64), moduleId = str(input?.moduleId).slice(0, 64)
       if (kind === 'module_design' && moduleId !== '') docKey = `md:${moduleId}`
       else if (kind === 'feature_design' && nodeId !== '') docKey = `fd:${mapId}:${nodeId}`
       else if (kind === 'product_design') {
-        /* 产品设计：单份用 pd:<产品>；分册用 pd:<产品>:<模块>，避免与模块设计文档的 md:<模块> 撞键 */
+        /* 正文用 pd:<产品>，分册用 pd:<产品>:<模块>；交叉报告由调用方显式给 pdr:<产品>，
+           仍归 product_design 分类，但不得覆盖正文。已有显式 docKey 原样保留。 */
         const pid = str(input?.productId) || 'all'
         docKey = moduleId !== '' ? `pd:${pid}:${moduleId}` : `pd:${pid}`
       }
     }
-    let existing = this.db.prepare('SELECT id, created_at, file_path FROM notes WHERE id = ?').get(id) as any
     /* 有 doc_key 时按它找既有笔记：幂等，避免 AI 重跑堆重复文档 */
     if (existing === undefined && docKey !== '') {
-      existing = this.db.prepare('SELECT id, created_at, file_path FROM notes WHERE doc_key = ?').get(docKey) as any
+      existing = this.db.prepare('SELECT id, created_at, file_path, map_id, kind, node_id, module_id, doc_key FROM notes WHERE doc_key = ?').get(docKey) as any
     }
+    const mapId = str(owns('mapId') ? input.mapId : existing?.map_id)
+    const rawKind = str(owns('kind') ? input.kind : existing?.kind)
+    const kind = ['module_design', 'product_design', 'feature_design', 'ui_design', 'test_design'].includes(rawKind) ? rawKind : ''
+    const nodeId = str(owns('nodeId') ? input.nodeId : existing?.node_id).slice(0, 64)
+    const moduleId = str(owns('moduleId') ? input.moduleId : existing?.module_id).slice(0, 64)
     const finalId = existing?.id !== undefined ? String(existing.id) : id
     const createdAt = existing?.created_at ?? now
-    let filePath = ''
-    try {
-      filePath = syncNoteFile({ id, title, content }, nb)
-    } catch (cause) {
-      console.warn(`[dsh-workbench] 笔记文件写入失败：${String(cause)}`)
-    }
+    /* 镜像失败必须先抛出：不能清空数据库路径，更不能删除上一份成功的文件。
+       docKey 命中旧记录时沿用其真实 ID，避免每次重跑生成新的镜像文件。 */
+    const filePath = syncNoteFile({ id: finalId, title, content }, nb)
     if (existing) {
       this.db.prepare('UPDATE notes SET notebook_id=?, title=?, content=?, tags=?, pinned=?, file_path=?, map_id=?, kind=?, node_id=?, module_id=?, doc_key=?, updated_at=? WHERE id=?')
         .run(notebookId, title, content, JSON.stringify(tags), pinned, filePath, mapId, kind, nodeId, moduleId, docKey, now, finalId)
@@ -2804,6 +2806,7 @@ CREATE TABLE IF NOT EXISTS products (
       tags, mapId, kind,
       nodeId: featureId, moduleId,
       productId: product.id,
+      ...(Object.prototype.hasOwnProperty.call(input ?? {}, 'docKey') ? { docKey: str(input.docKey) } : {}),
     })
     if (moduleId !== '') {
       this.db.prepare('UPDATE modules SET note_id=?, status=?, updated_at=? WHERE id=? AND product_id=?')
@@ -4275,10 +4278,25 @@ class JsonStore {
     const wanted = str(input?.notebookId)
     const notebookId = this.notebooks.some(n => n.id === wanted) ? wanted : (this.notebooks[0]?.id ?? 'nb-default')
     const nb = this.notebooks.find(n => n.id === notebookId)
-    const existing = this.notes.find(n => n.id === id)
-    let filePath = ''
-    try { filePath = syncNoteFile({ id, title, content }, nb) } catch (cause) { console.warn(`[dsh-workbench] 笔记文件写入失败：${String(cause)}`) }
-    const note = { id, notebookId, title, content, tags, pinned, filePath, createdAt: existing?.createdAt ?? now, updatedAt: now }
+    let existing = this.notes.find(n => n.id === id)
+    const owns = (key: string): boolean => Object.prototype.hasOwnProperty.call(input ?? {}, key)
+    let docKey = str(owns('docKey') ? input.docKey : existing?.docKey).slice(0, 160)
+    if (existing === undefined && !owns('docKey') && docKey === '') {
+      const kind = str(input?.kind), mapId = str(input?.mapId)
+      const nodeId = str(input?.nodeId).slice(0, 64), moduleId = str(input?.moduleId).slice(0, 64)
+      if (kind === 'module_design' && moduleId !== '') docKey = `md:${moduleId}`
+      else if (kind === 'feature_design' && nodeId !== '') docKey = `fd:${mapId}:${nodeId}`
+      else if (kind === 'product_design') docKey = `pd:${str(input?.productId) || 'all'}${moduleId ? ':' + moduleId : ''}`
+    }
+    if (existing === undefined && docKey !== '') existing = this.notes.find(n => n.docKey === docKey)
+    const mapId = str(owns('mapId') ? input.mapId : existing?.mapId)
+    const rawKind = str(owns('kind') ? input.kind : existing?.kind)
+    const kind = ['module_design', 'product_design', 'feature_design', 'ui_design', 'test_design'].includes(rawKind) ? rawKind : ''
+    const nodeId = str(owns('nodeId') ? input.nodeId : existing?.nodeId).slice(0, 64)
+    const moduleId = str(owns('moduleId') ? input.moduleId : existing?.moduleId).slice(0, 64)
+    const finalId = existing?.id ?? id
+    const filePath = syncNoteFile({ id: finalId, title, content }, nb)
+    const note = { id: finalId, notebookId, title, content, tags, pinned, filePath, mapId, kind, nodeId, moduleId, docKey, archivedAt: existing?.archivedAt ?? '', createdAt: existing?.createdAt ?? now, updatedAt: now }
     if (existing) {
       if (existing.filePath && existing.filePath !== filePath) removeFile(existing.filePath)
       Object.assign(existing, note)
@@ -4680,8 +4698,13 @@ class JsonStore {
     const product = this.products.find(p => p.id === str(input?.productId))
     if (!product) throw new Error('产品不存在')
     const featureId = str(input?.featureId)
+    const moduleId = str(input?.moduleId)
+    const kind = ['module_design', 'product_design', 'feature_design', 'ui_design', 'test_design'].includes(str(input?.kind))
+      ? str(input.kind) : (moduleId !== '' ? 'module_design' : featureId !== '' ? 'feature_design' : 'product_design')
     const tags = cleanTags([...(list(input?.tags)), '产品', product.name, ...(featureId ? [featureId] : []), ...(str(input?.moduleId) ? [str(input.moduleId)] : []), ...(str(input?.platform) ? [`platform:${str(input.platform)}`] : [])])
-    const note = this.saveNote({ notebookId: product.notebookId, title: str(input?.title) || '产品设计笔记', content: str(input?.content), tags })
+    const note = this.saveNote({ notebookId: product.notebookId, title: str(input?.title) || '产品设计笔记', content: str(input?.content), tags,
+      productId: product.id, mapId: str(input?.mapId) || this.defaultMapId(product.id), kind, nodeId: featureId, moduleId,
+      ...(Object.prototype.hasOwnProperty.call(input ?? {}, 'docKey') ? { docKey: str(input.docKey) } : {}) })
     const module = this.modules.find(m => m.id === str(input?.moduleId) && m.productId === product.id)
     if (module) { module.noteId = note.id; module.status = 'designed'; module.updatedAt = isoDateTimeSeconds(); this.persistNews() }
     return note
@@ -5666,13 +5689,17 @@ async function exportNoteFile(store: SqliteStore | JsonStore, noteId: string, fo
 }
 
 function syncNoteFile(note: { id: string; title: string; content: string }, notebook: any): string {
-  const workspace = str(notebook?.workspace_path).trim()
+  const workspace = str(notebook?.workspace_path ?? notebook?.workspacePath).trim()
   if (workspace === '') return ''
   const dir = join(workspace, '.dsh-workbench', 'notes', sanitizeFilename(str(notebook?.name) || '笔记本'))
   mkdirSync(dir, { recursive: true })
   const suffix = note.id.slice(-6)
   const path = join(dir, `${sanitizeFilename(note.title)}-${suffix}.md`)
-  writeFileSync(path, `# ${note.title}\n\n${note.content}\n`, 'utf8')
+  const temporary = `${path}.tmp-${randomUUID()}`
+  try {
+    writeFileSync(temporary, `# ${note.title}\n\n${note.content}\n`, { encoding: 'utf8', flag: 'wx' })
+    renameSync(temporary, path)
+  } finally { removeFile(temporary) }
   return path
 }
 
@@ -6648,6 +6675,8 @@ function registerProductTools(ctx: any, store: SqliteStore | JsonStore): void {
         mapId: { type: 'string', description: '导图 id（不传则归到该产品第一张导图）。' },
         featureId: { type: 'string', description: '导图节点 id（功能/需求）。' },
         moduleId: { type: 'string', description: '模块/业务节点 id。' },
+        kind: { type: 'string', enum: ['module_design', 'product_design', 'feature_design', 'ui_design', 'test_design'], description: '设计文档类别；未传时按模块/节点归属推导。' },
+        docKey: { type: 'string', maxLength: 160, description: '稳定文档身份。产品正文默认 pd:<产品id>；产品交叉校验报告必须显式给 pdr:<产品id>，重跑仅更新该报告。' },
         platform: { type: 'string', enum: ['pc', 'dsh', 'mobile', 'tablet', 'all'], description: '端。' },
         title: { type: 'string', description: '笔记标题。' },
         content: { type: 'string', description: '完整设计笔记 Markdown（背景/目标/用户故事/流程/交互/边界/验收）。' },
@@ -6846,7 +6875,7 @@ export function apply(ctx: any): void {
     products: () => store.listProducts(true), studio: nativeGameStudio, prefix: PREFIX,
     authorize: authorizeNativeGame,
   })
-  const nativeGameManagement = createNativeGameManagement({ ...nativeGame, products: () => store.listProducts(true), authorize: authorizeNativeGame })
+  const nativeGameManagement = createNativeGameManagement({ ...nativeGame, service: nativeGame.service, products: () => store.listProducts(true), authorize: authorizeNativeGame })
   const nativeGameHttp = createNativeGameHttp({ prefix: PREFIX, studio: nativeGameStudio, products: () => store.listProducts(true), capabilities: () => nativeGame.capabilities(), management: nativeGameManagement })
   const productImages = createProductImagesModule({ ctx, products: () => store.listProducts(true), authorize: authorizeNativeGame })
   let canvasModule: ReturnType<typeof createWorkflowCanvasModule> | null = null

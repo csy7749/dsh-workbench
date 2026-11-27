@@ -6,7 +6,7 @@
 
 2026-11-12 的遗漏、矛盾及源码静态复核见 [文档审校记录](documentation-review-2026-11-12.md)。其中区分已修正文档和仍待实测 / 实现的事项。
 
-2026-11-27 新增 [游戏优先的工作台重设计提案](game-workbench-redesign/README.md)，附 [27 个参考仓库取舍](game-workbench-redesign/reference-map.md) 和 [结构交互草图](game-workbench-redesign/structure-preview.html)。这是产品与交互规划，尚未实施，不替代下文 workflow-v1／IMG 的现行合同和状态台账；小说、AI 漫剧本轮暂缓。
+2026-11-27 的 [游戏工作台第一版](game-workbench-v1.md) 已实现导航、显式项目/产品上下文、独立游戏工作区和首批写入安全修正，附验证范围与回退办法；真实 DSH 与人工使用验收仍待完成。方向依据见 [重设计规划](game-workbench-redesign/README.md)、[27 个参考仓库取舍](game-workbench-redesign/reference-map.md) 和 [结构交互草图](game-workbench-redesign/structure-preview.html)。不替代下文 workflow-v1／IMG 的现行合同和状态台账；小说、AI 漫剧本轮暂缓。
 
 ## 1. 当前使用与维护
 
@@ -15,10 +15,11 @@
 | 文档 | 用途 | 状态与阅读注意 |
 | --- | --- | --- |
 | [项目 README](../README.md) | 安装、功能全貌、日常使用 | 当前包声明版本为 1.13.0 |
+| [游戏工作台第一版](game-workbench-v1.md) | 新导航、独立游戏工作面、源码候选、试玩/版本/导出、兼容入口 | 首个增量已实现；隔离自动验证与真实 DSH / 人工验收分别记录 |
 | [设计流水线](design-pipeline.md) | 导图、模块文档、模块结构、产品文档与检查 | 已有直接写回流程；新工作流改造见执行计划 |
 | [UI 与 DEMO](ui-demo.md) | 主题、页面设计、DEMO、工具与自检 | 现有功能说明；开头引用的原始设计资料未随仓库提供 |
 | [通用 Demo 库](demo-library.md) | 内置 Demo Pack、Cinderwatch 节点/源码索引、缩略图和受控预览 | 内置目录与项目网页 Demo 聚合说明 |
-| [产品图片素材](product-images.md) | UI 设计下的图片入口、dsh-image-gen 接入、生成／导入共用画廊与比较、预览选用和原图下载 | 主入口「研发 → UI 设计 → 图片素材」，产品页保留快捷入口；真实渠道生成及人工视觉验收单独记录 |
+| [产品图片素材](product-images.md) | UI 设计下的图片入口、dsh-image-gen 接入、生成／导入共用画廊与比较、预览选用和原图下载 | 新入口「素材 → 项目图片」，界面设计和产品页保留快捷入口；真实渠道生成及人工视觉验收单独记录 |
 | [增量同步协议](sync-protocol.md) | 六类实体、游标、墓碑和同步接口 | 文档标注适用 1.10.0；跨版本使用先核对 `src/host/sync.ts` |
 | [智能体团队入口](agent-team/README.md) | 团队配置、派发、投影、知识与记忆 | 含历史版本进度；模型、权限、建队等运行边界需分别核验 |
 

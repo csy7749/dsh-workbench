@@ -364,8 +364,12 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench', na
       const withNodes = compiled.map(item => ({ ...item, node: nodes.get(item.nodeId) }))
       const principal = 'workflow-ui:' + target
       service.registerPrincipal({ id: principal, kind: 'ui', productId: target })
-      service.startRun({ principal, idempotencyKey: key(), runId, productId: target, input: { graphId: graph.id ?? null, sourceRevision: graph.sourceRevision ?? null, packVersions: Object.fromEntries(PACKS.filter(pack => pack.id === 'core' || pack.id === graph.line).map(pack => [pack.id, pack.version])) }, steps: compiled.map(item => item.step) })
-      kernel.query('INSERT INTO wf_run_graphs VALUES(?,?,?,?)', runId, JSON.stringify(graph), JSON.stringify(withNodes), new Date().toISOString())
+      // The run and the graph it executes become visible together, including
+      // every nested kernel write made by startRun on this same connection.
+      kernel.transaction(() => {
+        service.startRun({ principal, idempotencyKey: key(), runId, productId: target, input: { graphId: graph.id ?? null, sourceRevision: graph.sourceRevision ?? null, packVersions: Object.fromEntries(PACKS.filter(pack => pack.id === 'core' || pack.id === graph.line).map(pack => [pack.id, pack.version])) }, steps: compiled.map(item => item.step) })
+        kernel.query('INSERT INTO wf_run_graphs VALUES(?,?,?,?)', runId, JSON.stringify(graph), JSON.stringify(withNodes), new Date().toISOString())
+      })
       return { runId, steps: compiled.map(item => ({ nodeId: item.nodeId, title: item.title, kind: item.kind })) }
     },
     listForGraph(graphId, owner = productId) {

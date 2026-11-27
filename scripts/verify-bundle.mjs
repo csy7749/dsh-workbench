@@ -68,7 +68,7 @@ check('测试客户端用例/执行/报告', client.includes('test-case-list') &
 check('测试 Bug 录入/回归', client.includes('createBugFromTest') && client.includes('regressionRun') && host.includes('/bugs/status'))
 check('AI 会话统一走 sessions（无刷新）', client.includes('dispatchToNewSession') && client.includes('createSessionIn') && client.includes('sendToSession') && !client.includes('location.reload'))
 check('AI 发送走公开 retain（ready 可 resolve）', client.includes('.retain(') && client.includes('gateway') && client.includes('会话打开超时'))
-check('默认产品跟随当前项目（非 products[0]）', read('src/client/app.ts').includes('const byWorkspace = curProject === undefined') && read('src/client/app.ts').includes('productSelected = byWorkspace?.id ?? products[0]?.id ?? null'))
+check('产品选择限于明确项目，多产品不猜首项', read('src/client/app.ts').includes("const scopedProducts = ['all', 'none', ''].includes(ui.project) ? [] : uiImageProducts()") && read('src/client/app.ts').includes('productSelected = scopedProducts.length === 1 ? scopedProducts[0].id : null') && !read('src/client/app.ts').includes('productSelected = byWorkspace?.id ?? products[0]?.id ?? null'))
 check('测试页计划 Tab + 待回归徽标', client.includes('待回归') && client.includes('test-gen-doc') && client.includes('test-run-pending') && client.includes('pending-regression') && client.includes('test-plan-open'))
 check('流水线 8 阶段（含 UI/DEMO/测试文档/测试用例）', client.includes('测试设计文档（按角色）') && client.includes('测试用例') && client.includes('ui_design') && client.includes('test_cases') && client.includes('data-pipeline-stage='))
 check('测试计划与追溯链（T1/T2）', host.includes('CREATE TABLE IF NOT EXISTS test_plans') && host.includes('purgeStaleTestCases') && host.includes('markCasesForRegression') && host.includes('publishTestDoc'))
@@ -148,7 +148,7 @@ check('底部悬浮导航已移除', !client.includes('wb-dock') && !client.incl
 check('顶栏含灵感模块名', /idea:\s*["']灵感["']/.test(client) && /idea:\s*["']研发["']/.test(client))
 check('旧灵感已移除', !client.includes('productInspiration') && !host.includes('workbench_inspiration_publish') && !client.includes('/products/inspirations'))
 check('客户端含资产库视图（嵌入本机资产库服务）', client.includes('wb-assets-root') && client.includes('wb-assets-frame') && client.includes('127.0.0.1:4173') && client.includes('assets-reload') && client.includes('assets-frame-wrap'))
-check('资产库视图可进入（侧栏/门户/命令面板）', client.includes('assets-mode') && /view:\s*["']assets["']/.test(client) && /assets:\s*["']Unity 资产库["']/.test(client) && /assets:\s*["']研发["']/.test(client))
+check('资产库视图可进入（素材/旧门户/命令面板）', client.includes('assets-mode') && /view:\s*["']assets["']/.test(client) && /assets:\s*["']Unity 资产库["']/.test(client) && /assets:\s*["']素材["']/.test(client) && client.includes('打开 Unity 资产库'))
 check('资产库视图为嵌入模式（不显示详情栏与内边距）', client.includes('assets-mode') && client.includes('.app.assets-mode .detail'))
 /* 自动代启：入口既然在工作台，就不该再让用户去终端敲 npm run start:web。
    这两条钉住「前端只调接口、宿主才动子进程」的分工，以及失败时页面内给重试而不是教用户敲命令。 */
