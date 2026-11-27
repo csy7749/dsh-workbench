@@ -6,7 +6,7 @@ import { syncBuiltinESMExports } from 'node:module'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createNativeGameStudio, nativeGameFiles as files } from '../src/host/native-game-studio.mjs'
+import { createNativeGameStudio, nativeGameFiles as files, nativeGameStudioContract } from '../src/host/native-game-studio.mjs'
 
 const workspaceRoot = mkdtempSync(join(tmpdir(), 'native-game-history-'))
 const studio = createNativeGameStudio(), productId = 'history-fixture'
@@ -159,9 +159,10 @@ try {
   rejectAsset({ pickup: asset('image/svg+xml', Buffer.from('<svg><image href="https://outside/"/></svg>')) }, /game_asset_svg_unsafe/)
   rejectAsset({ pickup: asset('image/png', Buffer.from('invalid image')) }, /game_asset_png_invalid/)
   rejectAsset({ hitSound: asset('audio/wav', Buffer.from('invalid audio')) }, /game_asset_wav_invalid/)
-  rejectAsset({ pickup: asset('image/svg+xml', Buffer.alloc(1024 * 1024 + 1, 'x')) }, /game_asset_invalid|game_asset_integrity_invalid/)
-  const largeSvg = Buffer.concat([svg, Buffer.alloc(720 * 1024 - svg.length, ' ')])
-  rejectAsset({ pickup: asset('image/svg+xml', largeSvg), player: asset('image/svg+xml', largeSvg), hitSound: asset('audio/wav', wav(190000)) }, /game_assets_too_large/)
+  rejectAsset({ pickup: asset('image/svg+xml', Buffer.alloc(nativeGameStudioContract.maxAssetBytes + 1, 'x')) }, /game_asset_invalid|game_asset_integrity_invalid/)
+  const largeAssetBytes = Math.floor(nativeGameStudioContract.maxTotalAssetBytes / 3) + 1
+  const largeSvg = Buffer.concat([svg, Buffer.alloc(largeAssetBytes - svg.length, ' ')])
+  rejectAsset({ pickup: asset('image/svg+xml', largeSvg), player: asset('image/svg+xml', largeSvg), enemyCard: asset('image/svg+xml', largeSvg) }, /game_assets_too_large/)
 
   const limited = createNativeGameStudio({ quotas: { maxBuilds: 1, maxPlaytests: 1 } })
   const limitedTarget = { ...target, slug: 'limited' }
