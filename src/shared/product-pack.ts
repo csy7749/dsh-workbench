@@ -8,5 +8,5 @@ export interface ProductPack {
   namespaces?: string[]
   line?: ProductLine
   nodeDefs: NodeDef[]
-  templates: { id: string; line: string; summary: string; graph: WorkflowGraph }[]
+  templates: { id: string; line: string; summary: string; graph: WorkflowGraph; legacy?: boolean }[]
 }

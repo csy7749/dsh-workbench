@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { playtestCinderwatch } from './native-game-cinderwatch-playtest.mjs'
 
 const require = createRequire(import.meta.url)
 const external = value => /^(https?|wss?|ftp):/i.test(value)
@@ -42,6 +43,10 @@ export function createNativeGamePlaytester({ studio, playwrightPath, browserExec
       const target = { workspaceRoot, productId, slug, buildId }
       const built = studio.readBuild(target)
       active = true
+      if (built.manifest.templateId === 'cinderwatch') {
+        try { return await playtestCinderwatch({ studio, service, target, built, seconds, signal, gameCsp }) }
+        finally { active = false }
+      }
       let browser, timer, abort, runningWork, timedOut = false, cancelled = false
       let state = null, keyboard = false, touch = false, screenshot
       let assetEvidence = { expected: Object.keys(built.manifest.assets ?? {}), images: {}, drawn: {}, audio: {}, played: {}, errors: [] }

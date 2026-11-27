@@ -1,4 +1,5 @@
 import { nativeThreeGameRuntime } from './native-game-runtime.mjs'
+import { renderCinderwatchHtml } from './native-game-cinderwatch.mjs'
 
 // Original dependency-free baseline; no external repository code or assets.
 function collectorGame() {
@@ -289,6 +290,7 @@ export const threeGameTemplateSource = '(' + threeCollectorGame.toString() + ')(
 const escapeHtml = value => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char])
 
 export function renderGameHtml(manifest, source) {
+  if (manifest.templateId === 'cinderwatch') return renderCinderwatchHtml(manifest, source)
   if (manifest.templateId === 'three-collector') return renderThreeGameHtml(manifest, source, nativeThreeGameRuntime())
   const title = escapeHtml(manifest.title)
   const width = manifest.orientation === 'landscape' ? 720 : 400

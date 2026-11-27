@@ -1,5 +1,5 @@
 import { checks, ruleChecks, reviewedExports, reviewContracts, reviewContractFor } from '../packs/runtime.mjs'
-import { readNativeCollectorRules } from '../packs/game/validators.mjs'
+import { readNativeGameRules, CINDERWATCH_RULES_PROMPT } from '../packs/game/validators.mjs'
 import { createCheckEvaluator } from '../workflow/check-registry.mjs'
 import { readGenerationResult } from '../workflow/session-result.mjs'
 import { createSessionRevisions } from './workflow-revisions.mjs'
@@ -517,7 +517,8 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench', na
         'Role: ' + (item.executionConfig?.role || 'Follow the workflow task'),
         'Task: ' + item.title,
         item.contract?.prompt ?? '',
-        item.type === 'game.rules' && compiledOf(runId).some(node => node.type === 'game.create')
+        item.type === 'game.rules' && compiledOf(runId).some(node => node.type === 'game.create' && !['collector', 'canvas-collector'].includes(node.node?.config?.template)) ? CINDERWATCH_RULES_PROMPT : '',
+        item.type === 'game.rules' && compiledOf(runId).some(node => node.type === 'game.create' && ['collector', 'canvas-collector'].includes(node.node?.config?.template))
           ? 'Native implementation contract: only canvas-collector@1 is implemented: one player moves horizontally with keyboard/touch, falling stars add score, falling triangles remove hearts, zero hearts loses, survive durationSeconds wins, restart resets. Include nativeTemplate="canvas-collector@1", durationSeconds (integer 3..60), hearts (integer 1..9) ONLY if the requested rules match this complete scope. Set creativePack="local-original-v1" to request the original local basic-shape SVG sprites and procedural WAV sounds; otherwise creativePack="none". Blender requires a separately available runtime and is not implied by this pack. Otherwise nativeTemplate="unsupported" and explain in openQuestions. The human will explicitly approve these rules before any project creation. Do not silently replace other game mechanics.' : '',
         'Deliverable instructions: ' + String(item.node.config.prompt ?? '').replaceAll('{{in}}', upstreamOf(runId, item.nodeId)),
         'Configuration: ' + JSON.stringify(item.node.config),
@@ -649,7 +650,7 @@ export function createWorkflowRunner({ dbPath, root, productId = 'workbench', na
         const source = contract.sources(compiled, item.nodeId)
         if (contract.dependentSource && review && review[contract.dependentSource] !== contentOf(runId, source[contract.dependentSource])) throw new Error('设计稿已修改：请先应用修改并重新生成下游内容，旧结果不能直接确认。')
         if (review && contract.kind === 'game-review-v1' && compiled.some(node => node.type === 'game.create' && ancestorsOf(compiled, node.nodeId).has(item.nodeId))) {
-          readNativeCollectorRules(review.rules)
+          readNativeGameRules(review.rules, compiled.find(node => node.type === 'game.create' && ancestorsOf(compiled, node.nodeId).has(item.nodeId))?.node?.config?.template)
         }
       }
       const report = service.validateHumanDraft({ principal: uiOf(runId), runId, taskId, content, expectedBindingVersion: bindingVersion, expectedTaskRevision: taskRevision })

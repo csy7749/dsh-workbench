@@ -16,16 +16,17 @@ export function runSummaryRow(run: WorkflowRunSummary): string {
 }
 
 export function renderRunHub(state: RunMonitorSnapshot, options: { compact?: boolean; filter?: RunHubFilter; project?: string } = {}): string {
-  const counts = runCounts(state.runs)
   const compact = options.compact === true
   const scoped = options.project ? state.runs.filter(run => run.workspacePath.toLowerCase() === options.project!.toLowerCase()) : state.runs
+  const counts = runCounts(scoped)
   const filter = options.filter ?? 'active'
-  let rows = compact ? state.runs.filter(run => isActiveRun(run) || run.needsAttention)
+  let rows = compact ? scoped.filter(run => isActiveRun(run) || run.needsAttention)
     : scoped.filter(run => filter === 'attention' ? run.needsAttention : filter === 'history' ? !isActiveRun(run) : isActiveRun(run) || run.needsAttention)
-  if (compact && rows.length === 0) rows = state.runs.slice(0, 3)
+  if (compact && rows.length === 0) rows = scoped.slice(0, 3)
+  if (compact) rows = rows.slice().sort((a, b) => Number(b.needsAttention) - Number(a.needsAttention) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
   if (compact) rows = rows.slice(0, 3)
   return `<section class="wf-hub${compact ? ' wf-hub-compact' : ''}" aria-label="${compact ? '工作流动态' : '工作流运行'}">
-    <div class="wf-hub-heading"><div><h2>${compact ? '工作流动态' : '运行概览'}</h2><span>全部项目 · ${counts.running} 运行中 · ${counts.attention} 待处理${compact ? '' : ' · 当前仅接入画布工作流'}</span></div><div class="wf-hub-actions">${compact ? '<button class="btn" data-wf-hub>查看全部</button>' : '<button class="btn" data-wf-templates>工作流模板</button>'}<button class="btn" data-wf-refresh ${state.loading ? 'disabled' : ''}>${state.loading ? '更新中…' : '刷新'}</button></div></div>
+    <div class="wf-hub-heading"><div><h2>${compact ? (counts.attention ? '需要处理' : '工作流动态') : '运行概览'}</h2><span>${compact ? options.project ? '当前项目' : '全部项目' : '全部项目'} · ${counts.running} 运行中 · ${counts.attention} 待处理${compact ? '' : ' · 当前仅接入画布工作流'}</span></div><div class="wf-hub-actions">${compact ? '<button class="btn" data-wf-hub>查看全部</button>' : '<button class="btn" data-wf-templates>工作流模板</button>'}<button class="btn" data-wf-refresh ${state.loading ? 'disabled' : ''}>${state.loading ? '更新中…' : '刷新'}</button></div></div>
     ${state.error ? `<p class="wf-hub-error" role="status">${esc(state.error)}${state.loaded ? '；以下保留上次读取结果。' : ''}</p>` : ''}
     ${!compact ? `<div class="wf-hub-filters" role="group" aria-label="运行筛选">${([['active', '运行中 / 待处理'], ['attention', '需要处理'], ['history', '近期历史']] as const).map(([key, label]) => `<button class="btn${filter === key ? ' primary' : ''}" data-wf-filter="${key}" aria-pressed="${filter === key}">${label}</button>`).join('')}<label><input type="checkbox" data-wf-current ${options.project ? 'checked' : ''}>仅当前项目</label></div>` : ''}
     <div class="wf-hub-rows">${rows.map(runSummaryRow).join('') || `<p class="wf-hub-empty">${!state.loaded ? state.error ? '运行状态尚未读取成功，可重试。' : '正在读取工作流状态…' : filter === 'attention' ? '当前没有需要处理的运行。' : options.project ? '当前项目没有符合筛选的运行。' : '暂无运行，可从具体产品的流程中启动。'}</p>`}</div>
@@ -46,6 +47,14 @@ export const RUN_HUB_CSS = `
 .wf-hub-badge[data-tone=attention]{color:var(--amber);background:var(--amber-soft)}.wf-hub-badge[data-tone=running]{color:var(--accent-ink);background:var(--accent-soft)}
 .wf-hub-progress progress{width:100%;height:6px;border:0;accent-color:var(--accent)}
 .wf-hub-progress progress::-webkit-progress-bar{background:var(--panel-3);border-radius:4px}.wf-hub-progress progress::-webkit-progress-value{background:var(--accent);border-radius:4px}
+.wf-hub-compact{margin:10px 0 18px}
+.wf-hub-compact .wf-hub-heading{padding:10px 14px;gap:8px}
+.wf-hub-compact .wf-hub-heading h2{font-size:13px;margin-bottom:2px}
+.wf-hub-compact .wf-hub-heading span{font-size:10.5px}
+.wf-hub-compact .wf-hub-actions{gap:4px}
+.wf-hub-compact .wf-hub-row{grid-template-columns:minmax(150px,1.2fr) minmax(110px,.9fr) minmax(140px,1fr) auto;gap:12px;padding:9px 14px}
+.wf-hub-compact .wf-hub-state small{display:none}
+.wf-hub-compact .wf-hub-foot{display:none}
 .wf-hub-error{padding:10px 20px;margin:0;background:var(--amber-soft);color:var(--amber);font-size:12px}
 .wf-hub-empty{padding:22px 20px;margin:0;color:var(--text-2)}.wf-hub-foot{margin:0;padding:12px 20px;border-top:1px solid var(--line)}
 @media(max-width:1000px){.wf-hub-row{grid-template-columns:minmax(140px,1fr) minmax(140px,1fr)}.wf-hub-row>.btn{justify-self:start}.wf-hub-filters label{margin-left:0}}

@@ -82,7 +82,8 @@ const { nativeGameLinks } = await import('../src/shared/native-game-links.ts')
 const globals = {
   nativeGameLinks,
   run: { ...run, runId: 'test', status: 'completed', validations: [], events: [] },
-  runDetailsOpen: true, displayMode: 'progress', runBusy: false, groupRunNodes, h,
+  runDetailsOpen: true, displayMode: 'progress', runBusy: false, groupRunNodes, h, focusRunNodeId: '',
+  setFocusRunNodeId: id => { globals.focusRunNodeId = id },
   useState: value => [value, () => {}],
   props: { openSession: id => opened.push(id) }, expandedRunNodes: expanded,
   setExpandedRunNodes: update => { expanded = update(expanded); globals.expandedRunNodes = expanded },
@@ -125,4 +126,11 @@ assert.equal(byClass(render(), 'wf-run-node-body').length, 0)
 globals.expandedRunNodes = {}
 globals.run = { ...globals.run, status: 'running', steps: [{ ...run.steps[0], state: 'running' }, ...run.steps.slice(1)] }
 assert.equal(byClass(render(), 'wf-run-node-body').length, 1, 'active nodes expand automatically')
+globals.run = { ...globals.run, status: 'paused', pauseReason: 'validation failed', steps: [{ ...run.steps[0], state: 'paused' }, ...run.steps.slice(1)] }
+tree = render()
+assert.equal(byClass(tree, 'wf-run-node-body').length, 1, 'paused nodes expand automatically')
+assert.match(text(byClass(tree, 'wf-run-attention')[0]), /validation failed/)
+walk(byClass(tree, 'wf-run-attention')[0]).find(node => node.type === 'button').props.onClick()
+assert.equal(globals.focusRunNodeId, 'a', 'attention action targets the exact node id')
+assert.equal(globals.expandedRunNodes['test:a'], true, 'attention action reopens its node details')
 console.log('PASS node grouping: interleaved attempts, retries, closed revisions, current artifact source, legacy bindings and unassigned sessions')

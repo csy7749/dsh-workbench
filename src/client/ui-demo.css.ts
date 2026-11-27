@@ -110,7 +110,35 @@ export const UI_DEMO_CSS = String.raw`
 .ud-vrow:hover .ud-vops{opacity:1}
 
 /* ---------- DEMO：列表 + 预览 ---------- */
-.ud-demo-wrap{display:grid;grid-template-columns:210px minmax(0,1fr);gap:10px;align-items:start}
+.ud-demo-wrap{display:flex;flex-direction:column;gap:12px;align-items:stretch}
+.ud-library-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ud-library-tools .spacer{flex:1}
+.ud-filter{height:28px;padding:0 10px;border:1px solid var(--ud-line);border-radius:7px;background:var(--ud-panel);color:var(--ud-text-2);font-size:10.5px;cursor:pointer}
+.ud-filter.active{background:var(--ud-accent-soft);border-color:color-mix(in srgb,var(--ud-accent) 36%,var(--ud-line));color:var(--ud-accent-ink);font-weight:650}
+.ud-library-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:9px}
+.ud-library-card{display:flex;flex-direction:column;min-width:0;padding:0;text-align:left;overflow:hidden;border:1px solid var(--ud-line);border-radius:10px;background:var(--ud-panel);color:var(--ud-text);cursor:pointer;box-shadow:var(--ud-shadow)}
+.ud-library-card:hover{border-color:color-mix(in srgb,var(--ud-accent) 35%,var(--ud-line-strong));transform:translateY(-1px)}
+.ud-library-card.active{border-color:var(--ud-accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--ud-accent) 22%,transparent),var(--ud-shadow)}
+.ud-library-cover{position:relative;aspect-ratio:16/10;background:linear-gradient(135deg,#25232a,#4d382b);overflow:hidden}
+.ud-library-cover img{position:relative;width:100%;height:100%;display:block;object-fit:cover}
+.ud-library-cover .fallback{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#f3bd76;font-size:30px;font-weight:700;letter-spacing:.06em;background:radial-gradient(ellipse at 65% 30%,#735035,#1a1a20 70%)}
+.ud-library-cover .kind{position:absolute;left:8px;top:8px;padding:3px 7px;border-radius:5px;background:rgba(8,10,14,.75);color:#fff;font-size:9px;backdrop-filter:blur(8px)}
+.ud-library-card-body{padding:9px 10px 10px;min-height:64px}
+.ud-library-card-body b{display:block;font-size:11.5px;line-height:1.4}
+.ud-library-card-body span{display:-webkit-box;margin-top:4px;color:var(--ud-text-3);font-size:9.5px;line-height:1.45;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.ud-detail-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--ud-line)}
+.ud-detail-head b{font-size:12.5px}
+.ud-detail-head .spacer{flex:1}
+.ud-detail-copy{padding:12px;color:var(--ud-text-2);font-size:11px;line-height:1.7}
+.ud-detail-copy p{margin:0 0 8px}
+.ud-chip-row{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+.ud-chip{padding:2px 7px;border:1px solid var(--ud-line);border-radius:99px;color:var(--ud-text-3);font-size:9px}
+.ud-source-groups{display:flex;flex-direction:column;gap:11px}
+.ud-source-group b{display:block;margin-bottom:4px;color:var(--ud-text);font-size:10.5px}
+.ud-source-path{padding:3px 0;color:var(--ud-text-2);font:9.5px/1.45 ui-monospace,Consolas,monospace;overflow-wrap:anywhere}
+.ud-acceptance{display:flex;flex-direction:column;gap:7px}
+.ud-acceptance div{display:flex;gap:8px;align-items:flex-start;padding:8px 9px;border:1px solid var(--ud-line);border-radius:8px;background:var(--ud-panel-2);font-size:10.5px;line-height:1.55;color:var(--ud-text-2)}
+.ud-acceptance i{font-style:normal;color:var(--ud-green);font-weight:700}
 .ud-demo-list{background:var(--ud-panel);border:1px solid var(--ud-line);border-radius:var(--ud-radius);box-shadow:var(--ud-shadow);overflow:hidden}
 .ud-dlist{display:flex;flex-direction:column;padding:5px}
 .ud-ditem{border:1px solid transparent;border-radius:7px;padding:6px 8px;cursor:pointer}
@@ -146,6 +174,8 @@ export const UI_DEMO_CSS = String.raw`
 .ud-chat{min-height:0}
 
 @media (max-width:1080px){
-  .ud-pages,.ud-spec-wrap,.ud-demo-wrap{grid-template-columns:1fr}
+  .ud-pages,.ud-spec-wrap{grid-template-columns:1fr}
 }
+
+@media (max-width:600px){.ud-library-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ud-library-card-body{padding:7px}.ud-library-card-body b{font-size:10.5px}}
 `

@@ -47,20 +47,32 @@ export function validateGameProjectEvidence(content) {
   const value = parseEvidence(content)
   return !!value && typeof value.project === 'string' && value.project.trim() !== ''
     && typeof value.title === 'string' && value.title.trim() !== '' && buildIdIsValid(value.buildId)
-    && (value.template === undefined || ['collector', 'voxel', 'canvas-collector'].includes(value.template))
+    && (value.template === undefined || ['cinderwatch', 'collector', 'voxel', 'canvas-collector', 'three-collector'].includes(value.template))
     && (value.bytes === undefined || Number.isSafeInteger(value.bytes) && value.bytes > 0)
     && (value.artifact === undefined || typeof value.artifact === 'string' && value.artifact.trim() !== '')
 }
 export function validateGamePlaytestEvidence(content) {
   const value = parseEvidence(content)
-  return !!value && typeof value.project === 'string' && value.project.trim() !== '' && buildIdIsValid(value.buildId)
+  const common = !!value && typeof value.project === 'string' && value.project.trim() !== '' && buildIdIsValid(value.buildId)
     && (value.playtestStatus === undefined || value.playtestStatus === 'passed')
-    && value.finalPhase === 'won' && value.buildCurrent === true && value.errors === 0 && value.requests === 0
+    && value.buildCurrent === true && value.errors === 0 && value.requests === 0
     && typeof value.runDir === 'string' && value.runDir.trim() !== '' && Array.isArray(value.screenshots) && value.screenshots.length > 0
     && value.screenshots.every(path => typeof path === 'string' && path.trim() !== '')
     && typeof value.summary === 'string' && /Errors: none/u.test(value.summary)
     && /Screenshots:\s*\S/u.test(value.summary)
+  if (!common) return false
+  if (value.template === 'cinderwatch' || value.templateId === 'cinderwatch' || value.nativeTemplate === 'cinderwatch@1') {
+    return value.templateId === 'cinderwatch' && value.nativeTemplate === 'cinderwatch@1' && value.evidenceVersion === 1
+      && value.mode === 'fixed-step-browser' && value.playtestStatus === 'passed'
+      && ['play', 'clear', 'defeat'].includes(value.finalPhase)
+      && Number.isFinite(value.simulatedSeconds) && value.simulatedSeconds > 0
+      && ['mouse', 'keyboard', 'touch'].every(input => value.inputs?.[input] === true)
+      && CINDERWATCH_PLAYTEST_CHECKS.every(check => value.checks?.[check] === true)
+      && value.screenshots.length >= 2 && Array.isArray(value.observations) && value.observations.length > 0
+  }
+  return value.finalPhase === 'won'
 }
+export const CINDERWATCH_PLAYTEST_CHECKS = ['renderer', 'buildSpend', 'manualTakeover', 'commanderReturn', 'pauseToggle', 'waveProgress', 'kills', 'economy', 'mobileLayout']
 export function validateGamePackageEvidence(content) {
   const value = parseEvidence(content)
   return !!value && typeof value.project === 'string' && value.project.trim() !== '' && buildIdIsValid(value.buildId)

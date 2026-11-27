@@ -13,6 +13,7 @@ import * as revisionModule from '../src/host/native-game-revisions.mjs'
 import * as blenderModule from '../src/host/native-game-blender.mjs'
 import * as playtestModule from '../src/host/native-game-playtest.mjs'
 import * as httpModule from '../src/host/native-game-http.ts'
+import * as serviceModule from '../src/host/native-game-service.mjs'
 
 const root = fs.mkdtempSync(path.join(tmpdir(), 'native-game-tool-cancel-'))
 function load(relative, modules) {
@@ -27,6 +28,7 @@ const tools = load('../src/host/native-game-tools.ts', {
   'node:fs': fs, 'node:path': path, './tool-policy.js': policy, './native-game-studio.mjs': studioModule,
   './native-game-assets.mjs': assetModule, './native-game-revisions.mjs': revisionModule,
   './native-game-blender.mjs': blenderModule, './native-game-playtest.mjs': playtestModule, './native-game-http.js': httpModule,
+  './native-game-service.mjs': serviceModule,
 })
 const definitions = new Map(), guards = new Map(), effects = [], calls = [], authorizations = []
 const ctx = { effect(fn, label) { effects.push(label); return fn() }, tools: { register(definition, options) { definitions.set(definition.name, definition); guards.set(definition.name, options.when) } } }
@@ -42,7 +44,7 @@ const waiting = async (name, args) => {
     if (args.signal.aborted) abort(); else args.signal.addEventListener('abort', abort, { once: true })
   })
 }
-const immediate = name => args => { calls.push(name); return { ...receipt, receivedSignal: args.signal } }
+const immediate = name => args => { calls.push(name); observedSignal = args.signal; return { ...receipt, receivedSignal: args.signal } }
 const studio = { create: immediate('create'), build: immediate('build'), exportBuild: immediate('export'), readBuild: immediate('preview'), currentState: immediate('current'), listBuilds: immediate('list'), compareBuilds: immediate('compare'), restoreBuild: immediate('restore') }
 const assets = { list: immediate('asset_list'), read: immediate('asset_read'), generate: immediate('asset_generate'), adopt: immediate('asset_adopt') }
 const revisions = { list: immediate('revisions'), propose: immediate('revision_propose'), recover: immediate('revision_recover'), verify: args => waiting('revision_verify', args) }
@@ -89,9 +91,10 @@ try {
   // Immediate operations have no mid-transaction yield; pre-abort is the atomic boundary.
   const signal = new AbortController().signal
   const generated = await definitions.get('workbench_game_asset_generate').execute({ ...target, provider: 'drawai', slot: 'pickup', recipe: { shape: 'rect' } }, { signal })
-  assert.equal(generated.ok, true); assert.equal(generated.result.receivedSignal, signal)
+  assert.equal(generated.ok, true); assert.equal(observedSignal, signal)
+  assert.equal(Object.hasOwn(generated.result, 'receivedSignal'), false, 'Internal execution context stays out of Agent responses')
   const restored = await definitions.get('workbench_game_restore').execute({ ...target, expectedCurrentHash: 'd'.repeat(64) }, { signal })
-  assert.equal(restored.result.receivedSignal, signal)
+  assert.equal(restored.ok, true); assert.equal(observedSignal, signal)
   console.log('PASS 14 real guarded registrations and shared-policy visibility; every pre-cancelled call refused without side effects; trusted ToolRunContext.signal reaches running playtest/Blender/revision verification, overrides spoofed args, and reaches asset/restore boundaries. Async providers are explicit synthetic lifecycle fixtures.')
 } finally {
   policy.setActiveToolPolicy(null)

@@ -2,9 +2,11 @@
 
 整理日期：2026-11-11（Asia/Shanghai）。本目录同时保存现有功能说明、历史调查证据和未来方案。**先读状态，再按任务读专题；规划中的能力不等于已经可用。**
 
-建议从 [执行计划](execution-plan-2026-11-11.md) 开始。它将已有方案收敛为 M0 基线验证 → M1 无模型闭环 → M2 产品设计试点，扩展路线分别排期。
+现行规划从第 2 节开始阅读：工作流查 v1 的 07／08，独立图片优化查 IMG 长期计划。[2026-11-11 执行计划](execution-plan-2026-11-11.md) 保留当时 M0 基线验证 → M1 无模型闭环 → M2 产品设计试点的历史顺序，不能代替后续专题的现行范围与台账。
 
 2026-11-12 的遗漏、矛盾及源码静态复核见 [文档审校记录](documentation-review-2026-11-12.md)。其中区分已修正文档和仍待实测 / 实现的事项。
+
+2026-11-27 新增 [游戏优先的工作台重设计提案](game-workbench-redesign/README.md)，附 [27 个参考仓库取舍](game-workbench-redesign/reference-map.md) 和 [结构交互草图](game-workbench-redesign/structure-preview.html)。这是产品与交互规划，尚未实施，不替代下文 workflow-v1／IMG 的现行合同和状态台账；小说、AI 漫剧本轮暂缓。
 
 ## 1. 当前使用与维护
 
@@ -15,6 +17,8 @@
 | [项目 README](../README.md) | 安装、功能全貌、日常使用 | 当前包声明版本为 1.13.0 |
 | [设计流水线](design-pipeline.md) | 导图、模块文档、模块结构、产品文档与检查 | 已有直接写回流程；新工作流改造见执行计划 |
 | [UI 与 DEMO](ui-demo.md) | 主题、页面设计、DEMO、工具与自检 | 现有功能说明；开头引用的原始设计资料未随仓库提供 |
+| [通用 Demo 库](demo-library.md) | 内置 Demo Pack、Cinderwatch 节点/源码索引、缩略图和受控预览 | 内置目录与项目网页 Demo 聚合说明 |
+| [产品图片素材](product-images.md) | UI 设计下的图片入口、dsh-image-gen 接入、生成／导入共用画廊与比较、预览选用和原图下载 | 主入口「研发 → UI 设计 → 图片素材」，产品页保留快捷入口；真实渠道生成及人工视觉验收单独记录 |
 | [增量同步协议](sync-protocol.md) | 六类实体、游标、墓碑和同步接口 | 文档标注适用 1.10.0；跨版本使用先核对 `src/host/sync.ts` |
 | [智能体团队入口](agent-team/README.md) | 团队配置、派发、投影、知识与记忆 | 含历史版本进度；模型、权限、建队等运行边界需分别核验 |
 
@@ -30,7 +34,7 @@
 
 ## 2. 当前开发规划
 
-**以 [工作流 v1 对齐包](workflow-v1/00-对齐说明.md) 为准（2026-11-15 起）**：范围收敛到游戏一条线，7 篇文档分别管对齐、内核与产品包、画布与节点规范、游戏产线、实施计划、入口与归属、与任务视图联动（最后一篇按用户指示**暂缓实施**，仅作记录）。下文 workflow-plan 19 篇降级为历史参考，只在 v1 没写到的细节上查阅。
+**工作流以 [v1 对齐包](workflow-v1/00-对齐说明.md) 为准（2026-11-15 起）**。当前画布范围、进度与验收进一步以 07 为准，共用入口及后续研发接入以 08 为准；06 任务视图联动按用户指示**暂缓实施**，仅作记录。下文 workflow-plan 19 篇降级为历史参考，只在现行规划没写到的细节上查阅。
 
 | 阅读顺序 | 文档 | 作用 |
 | --- | --- | --- |
@@ -41,6 +45,10 @@
 | 5 | [05 入口与归属](workflow-v1/05-入口与归属.md) | 双入口、复制即分离、保存为模板、ComfyUI 对照 |
 | 6 | [06 与任务视图联动](workflow-v1/06-视图联动.md) | **暂缓（仅记录）**：人工节点如何出现在行动清单 / 看板 / 时间轴 / 四象限 |
 | 7 | [04 实施计划](workflow-v1/04-实施计划.md) | M0–M4 里程碑、出口条件、风险预案、暂缓池 |
+| 8 | [07 画布产品化补充计划](workflow-v1/07-画布产品化补充计划.md) | 当前画布需求、实施范围与验收，优先于旧完成描述 |
+| 9 | [08 全局工作流入口与研发接入](workflow-v1/08-全局工作流入口与研发接入.md) | 工作台内部共用入口、领域服务复用与分阶段研发接入 |
+
+独立专题：[产品图片素材长期优化计划](product-images-roadmap.md)（2026-11-27）记录 IMG 任务、依赖、验收与回退，是新图片优化的唯一状态台账。当前功能见 [使用说明](product-images.md)；该路线不扩大 workflow v1 的既定完成条件，也不追溯勾选旧 S 任务。
 
 历史规划：[工作流规划总目录](workflow-plan/README.md)（草案，覆盖 W0–W6 与多条产品线，共 19 份）：
 
@@ -49,7 +57,7 @@
 | 核心契约 | [01 领域模型](workflow-plan/01-domain-model.md)、[02 快照](workflow-plan/02-snapshot-versioning.md)、[03 运行时](workflow-plan/03-node-contract-runtime.md)、[08 存储](workflow-plan/08-storage-migration.md) | M0 冻结、M1 实现 |
 | 用户闭环 | [04 人工编辑](workflow-plan/04-human-review-editor.md)、[09 编排界面](workflow-plan/09-orchestration-ui.md) | M1 最小界面、M2 试点；W3 才开放节点配置 |
 | 执行和上下文 | [13 执行配置](workflow-plan/13-execution-profiles.md)、[16 OhMyGame 机制](workflow-plan/16-ohmygame-workflow-adoption.md)、[17 上下文开发](workflow-plan/17-context-knowledge-development.md) | W0/E01/K0 → W1/E02/K1 → W2/E03 |
-| 验收与治理 | [10 验收](workflow-plan/10-testing-release-governance.md)、[11 任务台账](workflow-plan/11-roadmap-backlog.md)、[12 决策风险](workflow-plan/12-decisions-risks.md) | 全阶段；任务状态只在 11 更新 |
+| 验收与治理 | [10 验收](workflow-plan/10-testing-release-governance.md)、[11 任务台账](workflow-plan/11-roadmap-backlog.md)、[12 决策风险](workflow-plan/12-decisions-risks.md) | 保留旧工作包的契约、状态与证据；不作为现行 v1／IMG 的总台账 |
 | 产品扩展 | [05 产品包](workflow-plan/05-product-packs.md)、[06 游戏](workflow-plan/06-game-workflow.md)、[07 小说短剧](workflow-plan/07-novel-drama-workflows.md) | 基础试点后分包实施 |
 | 独立扩展 | [14 聊天工作室](workflow-plan/14-chat-workflow-studio.md)、[15 素材工作流](workflow-plan/15-asset-workflow-sprite-gen.md)、[18 项目研习](workflow-plan/18-project-learning-workflow.md) | C / S / L 单独估算和启用；研习先做本地单专题 |
 
@@ -70,7 +78,7 @@
 ## 4. 文档维护规则
 
 1. 当前功能写明适用版本；规划写明阶段和依赖；调查结果写明日期、环境、证据及未验证项。
-2. 本目录索引负责导航，[执行计划](execution-plan-2026-11-11.md) 负责先后顺序，[11](workflow-plan/11-roadmap-backlog.md) 负责任务状态，[12](workflow-plan/12-decisions-risks.md) 负责决策。不要复制另一套复选框。
+2. 本目录索引负责导航。工作流现行范围／进度以 v1 的 [07](workflow-v1/07-画布产品化补充计划.md)／[08](workflow-v1/08-全局工作流入口与研发接入.md) 为准；图片优化 IMG 状态只在 [图片长期计划](product-images-roadmap.md) 维护。[执行计划](execution-plan-2026-11-11.md)、旧 [11](workflow-plan/11-roadmap-backlog.md)／[12](workflow-plan/12-decisions-risks.md) 保留其历史顺序、工作包状态与决策，不复制新任务复选框。
 3. 实施任务完成时附代码版本、验证命令和结果、适用的窗口证据及回退记录；原文中的“通过”不替代本轮验收。
 4. 保留现有文件名和路径，避免破坏引用。历史结论不重写；新复验追加日期和证据，过时待办由台账明确关闭或替换。
 5. 新文档加入对应专题和本索引；引用缺失资料时注明缺失并提供现有替代入口。

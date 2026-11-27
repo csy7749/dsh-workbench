@@ -5,10 +5,11 @@ import { Script } from 'node:vm'
 import { isDeepStrictEqual } from 'node:util'
 import { gameTemplateSource, renderGameHtml, threeGameTemplateSource } from './native-game-template.mjs'
 import { validateNativeGameGlb } from './native-game-glb.mjs'
+import { CINDERWATCH_TEMPLATE_ID, cinderwatchDefaultRules, cinderwatchTemplateSource, validateCinderwatchRules } from './native-game-cinderwatch.mjs'
 
 const TEMPLATE_ID = 'canvas-collector'
 const THREE_TEMPLATE_ID = 'three-collector'
-const TEMPLATE_IDS = new Set([TEMPLATE_ID, THREE_TEMPLATE_ID])
+const TEMPLATE_IDS = new Set([TEMPLATE_ID, THREE_TEMPLATE_ID, CINDERWATCH_TEMPLATE_ID])
 const TEMPLATE_VERSION = 1
 const BUILDER_VERSION = 1
 const MAX_SOURCE_BYTES = 1024 * 1024
@@ -35,7 +36,8 @@ function validateConfig(manifest) {
   if (typeof manifest.title !== 'string' || !manifest.title.trim() || manifest.title.length > 120 || /[\x00-\x1f]/.test(manifest.title)) fail('game_title_invalid')
   if (!['portrait', 'landscape'].includes(manifest.orientation)) fail('game_orientation_invalid')
   const rules = manifest.rules
-  if (!rules || !Number.isInteger(rules.durationSeconds) || rules.durationSeconds < 1 || rules.durationSeconds > 300
+  if (manifest.templateId === CINDERWATCH_TEMPLATE_ID) validateCinderwatchRules(rules)
+  else if (!rules || !Number.isInteger(rules.durationSeconds) || rules.durationSeconds < 1 || rules.durationSeconds > 300
     || !Number.isInteger(rules.hearts) || rules.hearts < 1 || rules.hearts > 9) fail('game_rules_invalid')
   validateAssets(manifest.assets, manifest.templateId)
 }
@@ -43,6 +45,7 @@ function validateConfig(manifest) {
 function validateAssets(assets, templateId) {
   if (assets === undefined) return
   if (!assets || typeof assets !== 'object' || Array.isArray(assets) || Object.getPrototypeOf(assets) !== Object.prototype) fail('game_assets_invalid')
+  if (templateId === CINDERWATCH_TEMPLATE_ID && Object.keys(assets).length) fail('game_asset_slot_invalid')
   let total = 0
   for (const [slot, asset] of Object.entries(assets)) {
     const image = ['pickup', 'player', 'enemyCard', 'bossCard', 'cacheCard', 'shrineCard', 'potionCard'].includes(slot)
@@ -548,10 +551,11 @@ export function createNativeGameStudio({ quotas: configured = {} } = {}) {
       return { ...evidence, reportHash: hash(text) }
       } finally { release() }
     },
-    create({ workspaceRoot, productId, slug, title, orientation = 'portrait', rules = { durationSeconds: 15, hearts: 3 }, template = TEMPLATE_ID }) {
+    create({ workspaceRoot, productId, slug, title, orientation = 'portrait', rules, template = TEMPLATE_ID }) {
       validateProduct(productId)
-      validateConfig({ title, orientation, rules })
       if (!TEMPLATE_IDS.has(template)) fail('game_template_unavailable')
+      if (rules === undefined) rules = template === CINDERWATCH_TEMPLATE_ID ? { ...cinderwatchDefaultRules } : { durationSeconds: 15, hearts: 3 }
+      validateConfig({ title, orientation, rules, templateId: template })
       const { workspace, games, project } = paths(workspaceRoot, slug, true)
       try { lstatSync(project); fail('game_project_exists') } catch (error) { if (error.code !== 'ENOENT') throw error }
       const staging = join(games, '.create-' + randomUUID())
@@ -562,7 +566,7 @@ export function createNativeGameStudio({ quotas: configured = {} } = {}) {
         mkdirSync(join(staging, '.studio'))
         writeFileSync(join(staging, '.studio/project.json'), json(record), { flag: 'wx' })
         writeFileSync(join(staging, 'game.json'), json(manifest), { flag: 'wx' })
-        writeFileSync(join(staging, 'game.js'), template === THREE_TEMPLATE_ID ? threeGameTemplateSource : gameTemplateSource, { flag: 'wx' })
+        writeFileSync(join(staging, 'game.js'), template === CINDERWATCH_TEMPLATE_ID ? cinderwatchTemplateSource() : template === THREE_TEMPLATE_ID ? threeGameTemplateSource : gameTemplateSource, { flag: 'wx' })
         const build = buildProject(staging, record, quotas)
         renameSync(staging, project)
         return result(workspace, project, slug, productId, build)
@@ -578,4 +582,4 @@ export function createNativeGameStudio({ quotas: configured = {} } = {}) {
 }
 
 export const nativeGameFiles = Object.freeze({ project: registeredProject, directory, regularFile, readBytes, readFile, atomicFile, hash, json })
-export const nativeGameStudioContract = Object.freeze({ templateId: TEMPLATE_ID, templateIds: [...TEMPLATE_IDS], threeTemplateId: THREE_TEMPLATE_ID, templateVersion: TEMPLATE_VERSION, builderVersion: BUILDER_VERSION, maxSourceBytes: MAX_SOURCE_BYTES, maxManifestBytes: MAX_MANIFEST_BYTES, maxHtmlBytes: MAX_HTML_BYTES, maxAssetBytes: MAX_ASSET_BYTES, maxTotalAssetBytes: 2 * MAX_ASSET_BYTES, quotas: DEFAULT_QUOTAS })
+export const nativeGameStudioContract = Object.freeze({ templateId: TEMPLATE_ID, templateIds: [...TEMPLATE_IDS], threeTemplateId: THREE_TEMPLATE_ID, cinderwatchTemplateId: CINDERWATCH_TEMPLATE_ID, templateVersion: TEMPLATE_VERSION, builderVersion: BUILDER_VERSION, maxSourceBytes: MAX_SOURCE_BYTES, maxManifestBytes: MAX_MANIFEST_BYTES, maxHtmlBytes: MAX_HTML_BYTES, maxAssetBytes: MAX_ASSET_BYTES, maxTotalAssetBytes: 2 * MAX_ASSET_BYTES, quotas: DEFAULT_QUOTAS })

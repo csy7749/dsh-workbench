@@ -1,6 +1,32 @@
 // Pure checks shared by generation, review and the kernel adoption gate.
 export const GAME_CHECKS = ['game.rules.schema', 'game.rules.non_empty', 'game.rules.no_placeholder']
 
+export const CINDERWATCH_BIOMES = ['ashen', 'frost', 'fen', 'ember', 'dunes']
+export const CINDERWATCH_RULES_PROMPT = 'Native contract: cinderwatch@1 is Three.js tower defense: four tower kinds and upgrades, road enemies, waves/bosses, gold economy, beacon lives and rule-based AI commander/player handover. Rules must explicitly contain nativeTemplate="cinderwatch@1", integer seed (1..999999, default 4), biome (ashen/frost/fen/ember/dunes, default ashen), integer startingGold (70..2000, default 300), integer lives (1..100, default 20), boolean autoCommand (default true). creativePack must be none or absent; all models/textures/sounds are procedural. Unsupported mechanics must be nativeTemplate="unsupported" and explained in openQuestions. Never replace tower defense with collector. Do not claim Blender/GLB, paid generation or publishing. Browser checks cover rendering, spending, handover, pause, waves, kills, economy and mobile controls/layout; no won phase is required. Human approval precedes creation.'
+
+/** Parse the approved template contract without substituting a different game. */
+export function readNativeGameRules(content, expectedTemplate) {
+  let rules
+  try { rules = JSON.parse(content) } catch {}
+  if (expectedTemplate && rules?.nativeTemplate && rules.nativeTemplate !== (expectedTemplate === 'collector' ? 'canvas-collector' : expectedTemplate) + '@1') throw new Error('game_approved_template_mismatch: 节点模板与已批准玩法不一致，请核对后重新批准。')
+  if (rules?.nativeTemplate === 'canvas-collector@1') return readNativeCollectorRules(content)
+  if (rules?.nativeTemplate !== 'cinderwatch@1') {
+    throw new Error('game_approved_scope_unsupported: 请批准受支持的完整玩法契约。Cinderwatch 塔防须包含 nativeTemplate="cinderwatch@1"、整数 seed / startingGold / lives、biome 和布尔 autoCommand；不能把其他玩法替换成采集游戏。')
+  }
+  if (!Number.isInteger(rules.seed) || !Number.isInteger(rules.startingGold) || !Number.isInteger(rules.lives)
+    || !CINDERWATCH_BIOMES.includes(rules.biome) || typeof rules.autoCommand !== 'boolean'
+    || (rules.player && rules.player.count !== 1)) {
+    throw new Error('game_approved_scope_unsupported: Cinderwatch 规则须显式填写整数 seed / startingGold / lives、biome（ashen / frost / fen / ember / dunes）、布尔 autoCommand，支持单人指挥。')
+  }
+  if (rules.seed < 1 || rules.seed > 999999 || rules.startingGold < 70 || rules.startingGold > 2000 || rules.lives < 1 || rules.lives > 100) {
+    throw new Error('game_approved_rules_out_of_range: Cinderwatch 的 seed 须为 1–999999，startingGold 为 70–2000，lives 为 1–100。')
+  }
+  if (rules.creativePack !== undefined && rules.creativePack !== 'none') {
+    throw new Error('game_creative_pack_unsupported: Cinderwatch 使用随模板发布的程序化模型、纹理与声音，creativePack 须为 none。')
+  }
+  return rules
+}
+
 export function readNativeCollectorRules(content) {
   let rules
   try { rules = JSON.parse(content) } catch {}

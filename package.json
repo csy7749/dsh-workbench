@@ -23,6 +23,7 @@
     "cordis.patch.yml",
     "README.md",
     "assets",
+    "third_party",
     "THIRD_PARTY_NOTICES.md",
     "docs"
   ],
@@ -31,8 +32,11 @@
     "bundle:host": "tsdown -c src/host/tsdown.config.ts",
     "bundle:client": "tsdown -c src/client/tsdown.config.ts",
     "sync:smoke": "node scripts/sync-smoke.mjs",
-    "verify": "node scripts/verify-bundle.mjs && node scripts/verify-news-pipeline.mjs && node scripts/verify-asset-service.mjs && node scripts/verify-tool-policy.mjs && node scripts/verify-workflow-run.mjs && node scripts/verify-native-game-studio.mjs && node scripts/verify-native-game-http.mjs && node scripts/verify-native-game-runner.mjs && node scripts/verify-native-game-adapter.mjs",
-    "verify:game-studio": "node scripts/verify-native-game-studio.mjs && node scripts/verify-native-game-http.mjs && node scripts/verify-native-game-runner.mjs && node scripts/verify-native-game-adapter.mjs",
+    "verify": "node scripts/verify-bundle.mjs && node scripts/verify-news-pipeline.mjs && node scripts/verify-asset-service.mjs && node scripts/verify-tool-policy.mjs && node scripts/verify-workflow-run.mjs && npm run verify:game-studio",
+    "verify:game-studio": "node scripts/verify-native-game-studio.mjs && node scripts/verify-native-game-media.mjs && node scripts/verify-native-game-http.mjs && node scripts/verify-native-game-runner.mjs && node scripts/verify-native-game-adapter.mjs && npm run verify:game-studio:cinderwatch",
+    "verify:game-studio:cinderwatch": "node scripts/verify-native-game-cinderwatch.mjs && node scripts/verify-native-game-service.mjs && node scripts/verify-native-game-cinderwatch-workflow.mjs && node scripts/verify-native-game-tool-cancellation.mjs",
+    "verify:game-studio:cinderwatch:browser": "node scripts/verify-native-game-cinderwatch-browser.mjs",
+    "verify:game-studio:cinderwatch:e2e": "npm run bundle:host && npm run bundle:client && node scripts/verify-native-game-cinderwatch-e2e.mjs",
     "verify:game-studio:browser": "node scripts/verify-native-game-browser.mjs",
     "verify:game-studio:playtest": "node scripts/verify-native-game-playtest.mjs",
     "verify:game-studio:workflow": "node scripts/verify-native-game-workflow.mjs",
@@ -41,7 +45,14 @@
     "verify:game-studio:creative-browser": "node scripts/verify-native-game-creative-browser.mjs",
     "verify:game-studio:revisions": "node scripts/verify-native-game-revisions.mjs --browser",
     "verify:workflow": "node scripts/verify-workflow-run.mjs",
-    "verify:workflow:hub": "node scripts/verify-workflow-run-hub.mjs && node scripts/verify-workflow-v1-host.mjs"
+    "verify:workflow:hub": "node scripts/verify-workflow-run-hub.mjs && node scripts/verify-workflow-v1-host.mjs",
+    "verify:demo-library": "node scripts/verify-demo-library.mjs",
+    "verify:demo-library:browser": "node scripts/verify-demo-library-browser.mjs",
+    "verify:product-images": "npm run bundle:host && node scripts/verify-product-images-runtime.mjs && node scripts/verify-product-images-v2.mjs && node scripts/verify-product-images.mjs && node scripts/verify-product-images-host.mjs",
+    "verify:product-images:browser": "node scripts/verify-product-images-browser.mjs && node scripts/verify-product-images-mount.mjs"
+  },
+  "dependencies": {
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

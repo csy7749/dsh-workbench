@@ -12,15 +12,17 @@
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { accessSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
 import { createIdeaModule, buildIdeaPrompt } from './idea.js'
 import { createAgentModule, readSessionLog } from './agent.js'
 import { createWorkflowCanvasModule } from './workflow-canvas.js'
 import { registerNativeGameTools } from './native-game-tools.js'
+import { registerNativeGameMediaTools } from './native-game-media-tools.js'
+import { createProductImagesModule } from './product-images-host.js'
 import { createNativeGameStudio } from './native-game-studio.mjs'
 import { createNativeGameHttp } from './native-game-http.js'
 import { createNativeGameManagement } from './native-game-management.js'
@@ -31,6 +33,8 @@ import { createWorkflowSessionAdapter } from './workflow-session.mjs'
 import { createToolPolicyModule, registerGuardedTool } from './tool-policy.js'
 import { collectFromSources, NEWS_SOURCES } from './news-sources.js'
 import { translateNewsItems } from './translate.js'
+import { BUILTIN_DEMO_LIBRARY, findBuiltinDemo } from '../packs/demo-library.mjs'
+import { cinderwatchDefaultRules, renderCinderwatchHtml } from './native-game-cinderwatch.mjs'
 /* 资产库本机服务（4173）的按需拉起：进入「Unity 资产库」时由宿主代启，不再要求用户敲命令。 */
 import { ensureAssetService, getAssetServiceStatus, stopAssetService } from './asset-library-service.js'
 /* 翻译的纯函数对外导出：离线验证脚本（scripts/verify-news-translate.mjs）引用构建产物，
@@ -3102,6 +3106,7 @@ CREATE TABLE IF NOT EXISTS products (
   /* ---------- DEMO（D5：layout_mode 创建后不可变；版本可回滚） ---------- */
 
   private demoRow(row: any): any {
+    const thumbnailUrl = this.demoThumbnailUrl(row.id, row.project_workspace)
     return {
       id: row.id, projectId: row.project_id, productId: row.product_id ?? '',
       uiDesignId: row.ui_design_id ?? '', themeId: row.theme_id,
@@ -3109,8 +3114,64 @@ CREATE TABLE IF NOT EXISTS products (
       scope: row.scope ?? 'all', kind: row.kind ?? 'page', title: row.title,
       entryPath: row.entry_path ?? '', platform: row.platform ?? 'all',
       status: row.status ?? 'ready', currentVersionId: row.current_version_id ?? '',
+      thumbnailUrl,
       archivedAt: row.archived_at ?? '', createdAt: row.created_at, updatedAt: row.updated_at,
     }
+  }
+
+  private demoThumbnailInfo(id: string, workspacePath?: string): { directory: string; file: string } | undefined {
+    const demoId = str(id)
+    const workspace = workspacePath === undefined
+      ? str((this.db.prepare('SELECT p.workspace_path FROM demos d LEFT JOIN projects p ON p.id=d.project_id WHERE d.id=?').get(demoId) as any)?.workspace_path)
+      : str(workspacePath)
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(demoId) || workspace === '') return undefined
+    const base = resolve(workspace, '.dsh-workbench', 'demos')
+    const directory = resolve(base, demoId)
+    if (!directory.startsWith(base + sep)) return undefined
+    for (const ancestor of [resolve(workspace, '.dsh-workbench'), base, directory]) {
+      try { if (lstatSync(ancestor).isSymbolicLink()) return undefined } catch (cause: any) { if (cause?.code !== 'ENOENT') return undefined }
+    }
+    return { directory, file: resolve(directory, 'thumbnail.webp') }
+  }
+
+  private demoThumbnailUrl(id: string, workspacePath?: string): string {
+    const info = this.demoThumbnailInfo(String(id), workspacePath)
+    if (!info || !existsSync(info.file)) return ''
+    try {
+      if (lstatSync(info.file).isSymbolicLink() || !statSync(info.file).isFile()) return ''
+      return `/workbench-api/demos/${encodeURIComponent(String(id))}/thumbnail?v=${statSync(info.file).mtimeMs}`
+    } catch { return '' }
+  }
+
+  async saveDemoThumbnail(id: string, dataUrl: string): Promise<string> {
+    const match = /^data:image\/(?:png|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(str(dataUrl))
+    if (!match || match[1].length > 560_000) throw new Error('缩略图格式无效或超过 420 KB')
+    const input = Buffer.from(match[1], 'base64')
+    const isPng = input.length >= 8 && input.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    const isWebp = input.length >= 12 && input.toString('ascii', 0, 4) === 'RIFF' && input.toString('ascii', 8, 12) === 'WEBP'
+    if (!isPng && !isWebp) throw new Error('缩略图内容格式无效')
+    const info = this.demoThumbnailInfo(id)
+    if (!info) throw new Error('DEMO 不存在或未关联工作区')
+    const sharp = require('sharp')
+    const image = await sharp(input, { limitInputPixels: 16_000_000 })
+      .rotate().resize(640, 400, { fit: 'cover' }).webp({ quality: 78 }).toBuffer()
+    mkdirSync(info.directory, { recursive: true })
+    if (existsSync(info.file) && lstatSync(info.file).isSymbolicLink()) throw new Error('缩略图目标无效')
+    const temporary = resolve(info.directory, `.thumbnail-${randomUUID()}.tmp`)
+    try {
+      writeFileSync(temporary, image, { flag: 'wx' })
+      renameSync(temporary, info.file)
+    } finally { try { rmSync(temporary, { force: true }) } catch {} }
+    return this.demoThumbnailUrl(id)
+  }
+
+  getDemoThumbnail(id: string): Buffer | undefined {
+    const info = this.demoThumbnailInfo(id)
+    if (!info || !existsSync(info.file)) return undefined
+    try {
+      if (lstatSync(info.file).isSymbolicLink() || !statSync(info.file).isFile()) return undefined
+      return readFileSync(info.file)
+    } catch { return undefined }
   }
 
   private demoVersionRow(row: any): any {
@@ -3126,15 +3187,15 @@ CREATE TABLE IF NOT EXISTS products (
   listDemos(projectId: string, includeArchived = false): any[] {
     const conds: string[] = []
     const params: any[] = []
-    if (projectId !== '') { conds.push('project_id = ?'); params.push(str(projectId)) }
-    if (!includeArchived) conds.push("archived_at = ''")
+    if (projectId !== '') { conds.push('demos.project_id = ?'); params.push(str(projectId)) }
+    if (!includeArchived) conds.push("demos.archived_at = ''")
     const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : ''
-    return (this.db.prepare(`SELECT * FROM demos ${where} ORDER BY updated_at DESC`).all(...params) as any[])
+    return (this.db.prepare(`SELECT demos.*, projects.workspace_path AS project_workspace FROM demos LEFT JOIN projects ON projects.id=demos.project_id ${where} ORDER BY demos.updated_at DESC`).all(...params) as any[])
       .map(row => this.demoRow(row))
   }
 
   getDemo(id: string): any | undefined {
-    const row = this.db.prepare('SELECT * FROM demos WHERE id = ?').get(str(id)) as any
+    const row = this.db.prepare('SELECT demos.*, projects.workspace_path AS project_workspace FROM demos LEFT JOIN projects ON projects.id=demos.project_id WHERE demos.id = ?').get(str(id)) as any
     if (row === undefined) return undefined
     const demo = this.demoRow(row)
     demo.versions = this.listDemoVersions(demo.id)
@@ -3181,7 +3242,7 @@ CREATE TABLE IF NOT EXISTS products (
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'','',?,?)`)
         .run(id, projectId, productId, uiDesignId, themeId, layoutMode, scope, kind, title, entryPath, platform, status, now, now)
     }
-    return this.demoRow(this.db.prepare('SELECT * FROM demos WHERE id = ?').get(id))
+    return this.demoRow(this.db.prepare('SELECT demos.*, projects.workspace_path AS project_workspace FROM demos LEFT JOIN projects ON projects.id=demos.project_id WHERE demos.id = ?').get(id))
   }
 
   /** 新建版本并切换 current；seq 自增。 */
@@ -5386,6 +5447,37 @@ function escapeHtmlHost(text: string): string {
   return String(text).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch] ?? ch))
 }
 
+/** Gallery controls stay outside the sandbox so a game cannot cover the close button. */
+function renderDemoPlayer(demo: { title: string; previewUrl: string }): string {
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>${escapeHtmlHost(demo.title)} · 试玩</title>
+<style>
+*{box-sizing:border-box}html,body{height:100%;margin:0}body{display:flex;flex-direction:column;background:#151b22;color:#e5e9ef;font:14px system-ui,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #36414d;flex-shrink:0}header strong{flex:1;min-width:0;overflow-wrap:anywhere}
+button{font:inherit;cursor:pointer;padding:8px 14px;border:1px solid #63717f;border-radius:6px;background:#263340;color:inherit;flex-shrink:0}button:focus-visible{outline:2px solid #e6bb82;outline-offset:3px}
+main{flex:1;min-height:0;display:flex}iframe{width:100%;height:100%;border:0}#closed{margin:auto;padding:24px;text-align:center;line-height:1.7}[hidden]{display:none!important}
+</style></head><body><header><strong>${escapeHtmlHost(demo.title)}</strong><button id="close-playtest" type="button">关闭试玩</button></header>
+<main id="player"><iframe sandbox="allow-scripts allow-forms allow-modals" src="${escapeHtmlHost(demo.previewUrl)}" title="${escapeHtmlHost(demo.title)}"></iframe>
+<section id="closed" hidden><p role="status">试玩已关闭，可关闭此标签页</p><button id="restart-playtest" type="button">重新试玩</button></section></main>
+<script>
+const player=document.getElementById('player'), closed=document.getElementById('closed');
+const template=player.querySelector('iframe').cloneNode(false);
+document.getElementById('close-playtest').onclick=()=>{
+  player.querySelector('iframe')?.remove();
+  closed.hidden=false;
+  document.getElementById('restart-playtest').focus();
+  window.close();
+};
+document.getElementById('restart-playtest').onclick=()=>{
+  closed.hidden=true;
+  player.prepend(template.cloneNode(false));
+  document.getElementById('close-playtest').focus();
+};
+</script></body></html>`
+}
+
 function findChrome(): string | null {
   const candidates = [
     process.env.CHROME_PATH,
@@ -6756,6 +6848,7 @@ export function apply(ctx: any): void {
   })
   const nativeGameManagement = createNativeGameManagement({ ...nativeGame, products: () => store.listProducts(true), authorize: authorizeNativeGame })
   const nativeGameHttp = createNativeGameHttp({ prefix: PREFIX, studio: nativeGameStudio, products: () => store.listProducts(true), capabilities: () => nativeGame.capabilities(), management: nativeGameManagement })
+  const productImages = createProductImagesModule({ ctx, products: () => store.listProducts(true), authorize: authorizeNativeGame })
   let canvasModule: ReturnType<typeof createWorkflowCanvasModule> | null = null
   let workflowSessionAdapter: ReturnType<typeof createWorkflowSessionAdapter> | null = null
   try {
@@ -6800,6 +6893,8 @@ export function apply(ctx: any): void {
   registerTestCaseTool(ctx, store)
   registerTestFlowTools(ctx, store)
   registerNativeGameTools(ctx, () => store.listProducts(true), { ...nativeGame, authorize: authorizeNativeGame, prefix: PREFIX })
+  registerNativeGameMediaTools(ctx, () => store.listProducts(true))
+  productImages.registerTools()
 
   const webServer: WebServerFace | undefined = ctx.webServer
   if (webServer === undefined || typeof webServer.register !== 'function') {
@@ -6818,6 +6913,7 @@ export function apply(ctx: any): void {
         if (agentModule !== null && (await agentModule.handle(req, res, path, method, url))) return
         if (await toolPolicy.handle(req, res, path, method, url)) return
         if (await nativeGameHttp.handle(req, res, path, method, url)) return
+        if (await productImages.handle(req, res, path, method, url)) return
         if (canvasModule !== null && (await canvasModule.handle(req, res, path, method, url))) return
         if (method === 'GET' && (path === '/state' || path === '/')) {
           send(res, 200, store.readState())
@@ -7226,8 +7322,58 @@ export function apply(ctx: any): void {
           return
         }
         /* ---------- DEMO（A4） ---------- */
+        if (method === 'GET' && path === '/demos/library') {
+          const projectId = str(url.searchParams.get('projectId'))
+          const demos = projectId !== '' ? store.listDemos(projectId, true) : []
+          send(res, 200, { ok: true, demos, packs: BUILTIN_DEMO_LIBRARY })
+          return
+        }
+        const builtinDemoRoute = /^\/demos\/library\/([^/]+)\/(view|play|thumbnail)$/.exec(path)
+        if (method === 'GET' && builtinDemoRoute !== null) {
+          const demoId = decodeURIComponent(builtinDemoRoute[1])
+          const demo = findBuiltinDemo(demoId)
+          if (!demo) { send(res, 404, { error: 'demo_not_found' }); return }
+          if (builtinDemoRoute[2] === 'play') {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+            res.end(renderDemoPlayer(demo))
+            return
+          }
+          if (builtinDemoRoute[2] === 'view') {
+            const html = renderCinderwatchHtml({ title: 'Cinderwatch · 烬火守望', orientation: 'landscape', rules: { ...cinderwatchDefaultRules } })
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+            res.end(html)
+            return
+          }
+          const hostDir = dirname(fileURLToPath(import.meta.url))
+          const imagePaths = [
+            resolve(hostDir, '../../assets/demo-thumbnails/cinderwatch.webp'),
+            resolve(hostDir, '../assets/demo-thumbnails/cinderwatch.webp'),
+          ]
+          const imagePath = imagePaths.find(candidate => existsSync(candidate) && statSync(candidate).isFile())
+          if (!imagePath) { send(res, 404, { error: 'thumbnail_not_found' }); return }
+          res.writeHead(200, { 'content-type': 'image/webp', 'cache-control': 'public, max-age=3600', 'x-content-type-options': 'nosniff' })
+          res.end(readFileSync(imagePath))
+          return
+        }
         if (method === 'GET' && path === '/demos') {
           send(res, 200, { demos: store.listDemos(str(url.searchParams.get('projectId')), url.searchParams.get('archived') === '1') })
+          return
+        }
+        if (method === 'POST' && /^\/demos\/[^/]+\/thumbnail$/.test(path)) {
+          const demoId = decodeURIComponent(path.split('/')[2] ?? '')
+          const body = await readJson(req)
+          try {
+            const thumbnailUrl = await serialized(() => store.saveDemoThumbnail(demoId, str(body?.dataUrl)))
+            send(res, 200, { ok: true, thumbnailUrl })
+          } catch (cause: any) { send(res, 400, { error: 'thumbnail_save_failed', message: String(cause?.message ?? cause) }) }
+          return
+        }
+        if (method === 'GET' && /^\/demos\/[^/]+\/thumbnail$/.test(path)) {
+          const demoId = decodeURIComponent(path.split('/')[2] ?? '')
+          const image = store.getDemoThumbnail(demoId)
+          if (!image) { send(res, 404, { error: 'thumbnail_not_found' }); return }
+          res.writeHead(200, { 'content-type': 'image/webp', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+          res.end(image)
           return
         }
         if (method === 'POST' && path === '/demos') {

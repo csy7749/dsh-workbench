@@ -9,6 +9,7 @@ import { WORKBENCH_CSS } from './styles'
 import { createIdeaView, type IdeaViewHandle } from './idea'
 import { createUiDesignView, type UiDesignViewHandle } from './ui-design'
 import { createDemoView, type DemoViewHandle } from './demo'
+import { createProductImagesView, type ProductImagesViewHandle } from './product-images'
 import { mountCanvasInto } from './workflow/canvas-panel'
 import { workflowRunMonitor } from './workflow/run-monitor.ts'
 import { renderRunHub, RUN_HUB_CSS, type RunHubFilter } from './workflow/run-hub.ts'
@@ -451,6 +452,12 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   /** 宿主是否提供多导图接口（旧宿主 404 时退回单导图 + products.mindmap）。 */
   let productMapsReady = false
   let productTab: 'map' | 'notes' | 'modules' | 'demo' = 'map'
+  let uiDesignSection: 'design' | 'images' = 'design'
+  let uiImageProductId = ''
+  let productListRevision = 0
+  let productImagesView: ProductImagesViewHandle | null = null
+  let productImagesHost: HTMLElement | null = null
+  let productImagesScope = ''
   let productNodeSelected: string | null = null
   /** 画布引擎：mind-elixir（编辑）/ ECharts 力导（关系）。 */
   let productMapEngine: 'tree' | 'force' = 'tree'
@@ -712,9 +719,11 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     const focused = shadow.activeElement as HTMLElement | null
     const focusAttribute = ['data-wf-filter', 'data-wf-current', 'data-wf-open', 'data-wf-refresh', 'data-wf-hub', 'data-wf-templates'].find(attribute => focused?.hasAttribute(attribute))
     const focusValue = focusAttribute ? focused?.getAttribute(focusAttribute) : undefined
+    const projectScope = ui.view === 'portal'
+      ? (ui.project !== 'all' && ui.project !== 'none' ? ui.project : undefined)
+      : (workflowCurrentProject && !['all', 'none'].includes(ui.project) ? ui.project : undefined)
     target.innerHTML = renderRunHub(snapshot, {
-      compact: ui.view === 'portal', filter: workflowFilter,
-      project: workflowCurrentProject && !['all', 'none'].includes(ui.project) ? ui.project : undefined,
+      compact: ui.view === 'portal', filter: workflowFilter, project: projectScope,
     })
     if (focusAttribute) Array.from(target.querySelectorAll<HTMLElement>(`[${focusAttribute}]`)).find(el => el.getAttribute(focusAttribute) === focusValue)?.focus({ preventScroll: true })
   }
@@ -829,6 +838,13 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (path === 'none' || path === '') return '未归属'
     return projectByPath(path)?.name ?? bugWorkspaceName(path)
   }
+  /** UI / DEMO 写入只使用明确选择的统一项目，不借用残留产品选择或列表首项。 */
+  function selectedProjectId(): string {
+    if (ui.project === 'all' || ui.project === 'none' || ui.project === '') return ''
+    const card = projectByPath(ui.project)
+    if (card?.projectId) return card.projectId
+    return projects.find(project => project.workspacePath === ui.project)?.id ?? ''
+  }
   function projectLabelOfTask(task: Task): string {
     return task.projectPath ? projectLabel(task.projectPath) : '未归属'
   }
@@ -854,6 +870,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   /** 切换项目范围：同时把产品 / Bug / 测试三个域的当前选择切到该项目，门户点卡片即完成对齐。 */
   function setProject(path: string, render = true): void {
     ui.project = path
+    uiImageProductId = ''
     const card = projectByPath(path)
     if (card?.product !== undefined) {
       productSelected = card.product.id
@@ -905,6 +922,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (view === 'notes') void loadNotes()
     if (view === 'bugs' && bugs.length === 0) void loadBugs()
     if (view === 'product' && products.length === 0) void loadProducts()
+    if (view === 'ui') void loadUiContext()
     if (view === 'workflows' && products.length === 0) void loadProducts(true).then(() => {
       if (workbenchDisposed || ui.view !== 'workflows') return
       restoreProject()
@@ -1016,7 +1034,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       app.classList.toggle('collapsed', ui.collapsed)
       app.classList.toggle('compact', ui.compact)
       app.classList.toggle('focus-expand', ui.view === 'focus' && ui.focusExpand)
-      app.classList.toggle('no-detail', ['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl', 'workflows', 'wfrun'].includes(ui.view))
+      app.classList.toggle('no-detail', ['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl', 'workflows', 'wfrun', 'ui', 'demo'].includes(ui.view))
     }
     renderSidebar()
     renderTopbar()
@@ -1054,6 +1072,11 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
         '<div class="side-sub" style="padding:3px 8px 6px">管理当前任务、计时长度和待专注队列</div>' +
         sideItem('专注空间', { icon: 'target', view: 'focus', active: true }) +
         sideItem('待专注', { icon: 'clock', view: 'focus', n: db.tasks.filter(t => t.status !== 'done').length }))
+    } else if (ui.view === 'ui' || ui.view === 'demo') {
+      const title = ui.view === 'ui' ? 'UI 设计' : 'DEMO'
+      const cards = projectCards().filter(card => card.projectId !== undefined && card.projectId !== '')
+      const items = cards.map(card => sideItem(esc(card.name), { icon: 'product', act: 'portal-project', id: esc(card.path), n: projectTaskCount(card.path), active: ui.project === card.path })).join('')
+      context = `<div class="side-sec"><div class="side-head">项目上下文</div><div class="side-sub" style="padding:3px 8px 6px">${title} 按所选项目读取与保存</div>${items || sideItem('打开项目门户', { icon: 'layers', act: 'portal-home' })}</div>`
     } else if (ui.view === 'test') {
       const items = testProjects.map(p => sideItem(`${esc(p.name)}`, { icon: 'test', act: 'test-pick', id: p.id, active: testProjectSelected === p.id })).join('')
       context = sideGroup('测试', null,
@@ -1203,6 +1226,12 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     const topbar = $id('wb-topbar')
     if (!topbar) return
     const saveText = saveState === 'saved' ? '已自动保存' : saveState === 'saving' ? '保存中…' : '保存失败'
+    const taskViews: Ui['view'][] = ['board', 'list', 'timeline', 'matrix', 'calendar', 'focus']
+    const primaryAction = ui.view === 'portal'
+      ? `<button class="btn-primary" data-act="portal-new">${ic('plus', 14)}新建项目 / 产品</button>`
+      : taskViews.includes(ui.view)
+        ? `<button class="btn-primary" data-act="new">${ic('plus', 14)}新建任务</button>`
+        : ''
     topbar.innerHTML = `
       ${ui.collapsed ? `<button class="icon-btn" data-act="collapse" title="展开侧栏">${ic('panel', 15)}</button>` : ''}
       <div class="crumb">${MODULE_OF[ui.view]} <span>/</span> <b>${NAME_OF[ui.view]}</b></div>
@@ -1212,7 +1241,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
         <button class="icon-btn" title="主题" data-act="theme">${ic(resolvedTheme() === 'light' ? 'moon' : 'sun', 15)}</button>
         <span class="save ${saveState === 'error' ? 'err' : saveState === 'saving' ? 'busy' : ''}"><i id="save-dot"></i>${saveText}</span>
         <button class="icon-btn" title="通知" data-act="notify">${ic('bell', 15)}</button>
-        <button class="btn-primary" data-act="new">${ic('plus', 14)}新建任务</button>
+        ${primaryAction}
       </div>`
     const input = $id<HTMLInputElement>('wb-search')
     input?.addEventListener('input', () => {
@@ -1228,6 +1257,15 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   const NAME_OF: Record<Ui['view'], string> = { portal: '项目门户', board: '看板', list: '行动清单', timeline: '时间轴', matrix: '四象限', flow: '流程', calendar: '日历', focus: '当前专注', stats: '数据复盘', news: '新闻检索', notes: '笔记', bugs: '质量管理', product: '产品', test: '测试', idea: '灵感', assets: 'Unity 资产库', ui: 'UI 设计', demo: 'DEMO', wftpl: '工作流模板', workflows: '运行概览', wfrun: '运行详情' }
 
   function renderContent(): void {
+    if (ui.view !== 'demo' && demoView !== null) { demoView.destroy(); demoView = null }
+    const imageProduct = isUiImages() ? uiImageProduct() : undefined
+    const imageScope = imageProduct ? JSON.stringify([imageProduct.id, imageProduct.workspacePath]) : ''
+    if (productImagesView !== null && imageScope !== productImagesScope) {
+      productImagesView.destroy(); productImagesView = null; productImagesHost = null; productImagesScope = ''
+    }
+    if (uiDesignView !== null && uiDesignScope !== selectedProjectId()) {
+      uiDesignView.destroy(); uiDesignView = null; uiDesignHost = null; uiDesignScope = ''
+    }
     if (ui.view === 'idea') { syncIdeaView(); return }
     if (ui.view === 'assets') { syncAssetsView(); return }
     const el = $id('wb-generic') ?? content()
@@ -1262,22 +1300,49 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     $id('wb-app')?.classList.toggle('flow-mode', ui.view === 'flow' || ui.view === 'wftpl' || ui.view === 'wfrun')
     const flowHostId = ui.view === 'flow' ? 'wb-flow-host' : ui.view === 'wftpl' ? 'wb-flow-template-host' : ui.view === 'wfrun' ? 'wb-flow-run-host' : ''
     const preserveFlowHost = flowCanvasHost?.isConnected && flowCanvasHost.id === flowHostId ? flowCanvasHost : null
+    const imageFocus = shadow.activeElement instanceof HTMLElement && productImagesHost?.contains(shadow.activeElement) ? shadow.activeElement : null
+    const imageSelection = imageFocus instanceof HTMLInputElement || imageFocus instanceof HTMLTextAreaElement
+      ? { start: imageFocus.selectionStart, end: imageFocus.selectionEnd, direction: imageFocus.selectionDirection } : null
     if (!preserveFlowHost) disposeFlowCanvas()
     el.innerHTML = html
     if (preserveFlowHost) {
       const replacement = $id(preserveFlowHost.id)
       if (replacement) replacement.replaceWith(preserveFlowHost)
     }
+    if (uiDesignHost && uiDesignView) $id('wb-ui-design-host')?.replaceWith(uiDesignHost)
+    if (imageProduct) {
+      const replacement = $id('wb-product-images-host')
+      if (replacement && productImagesHost && productImagesView) replacement.replaceWith(productImagesHost)
+      else if (replacement) {
+        productImagesHost = replacement
+        productImagesScope = imageScope
+        productImagesView = createProductImagesView(replacement, {
+          apiBase: API, product: imageProduct, ensureStyles: css => ensureExtraCss(css),
+        })
+        productImagesView.mount()
+      }
+    }
+    if (imageFocus?.isConnected) {
+      imageFocus.focus({ preventScroll: true })
+      if (imageSelection?.start != null && imageSelection.end != null && (imageFocus instanceof HTMLInputElement || imageFocus instanceof HTMLTextAreaElement)) {
+        imageFocus.setSelectionRange(imageSelection.start, imageSelection.end, imageSelection.direction ?? undefined)
+      }
+    }
     bindContentInputs()
     const projectPicker = $id<HTMLSelectElement>('wb-project')
     projectPicker?.addEventListener('change', () => {
       ui.project = projectPicker.value
+      uiImageProductId = ''
       const card = projectByPath(ui.project)
       if (card?.product !== undefined) productSelected = card.product.id
       if (card?.bugProject !== undefined) bugProjectFilter = card.bugProject.id
       db.settings.project = ui.project === 'none' ? '' : ui.project
       scheduleSave()
       renderAll()
+    })
+    $id<HTMLSelectElement>('wb-ui-image-product')?.addEventListener('change', event => {
+      uiImageProductId = (event.currentTarget as HTMLSelectElement).value
+      renderContent()
     })
     if (ui.view === 'notes') bindNotes()
     if (ui.view === 'bugs') bindBugs()
@@ -1297,18 +1362,69 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     if (ui.view === 'wfrun' && workflowRunTarget) mountFlowCanvas('wb-flow-run-host', workflowRunTarget.workspacePath, workflowRunTarget.productId, workflowRunTarget)
     if (ui.view === 'portal' || ui.view === 'workflows') updateWorkflowSummary()
     if (ui.view === 'test') bindTests()
-    if (ui.view === 'ui') ensureUiDesignView()
+    if (ui.view === 'ui' && uiDesignSection === 'design') ensureUiDesignView()
     if (ui.view === 'demo') ensureDemoView()
   }
 
-  /** UI 设计视图外壳：视图模块自持 DOM，这里只提供宿主容器。 */
+  function isUiImages(): boolean { return ui.view === 'ui' && uiDesignSection === 'images' }
+
+  /** 图片必须由明确产品承载；不能借用产品页的默认首项。 */
+  function uiImageProducts(): Product[] {
+    if (ui.project === 'all') return products
+    if (ui.project === 'none' || ui.project === '') return products.filter(product => !product.projectId && !product.workspacePath)
+    const projectId = selectedProjectId()
+    return products.filter(product => projectId && product.projectId
+      ? product.projectId === projectId : product.workspacePath === ui.project)
+  }
+
+  function uiImageProduct(): Product | undefined {
+    return uiImageProducts().find(product => product.id === uiImageProductId)
+  }
+
+  /** 产品页保留快捷入口，产品身份与已有画廊保持一致。 */
+  function openProductImages(product = productOf(productSelected)): void {
+    if (product) {
+      const project = projects.find(item => item.id === product.projectId)
+      setProject(project ? project.workspacePath || `prj:${project.id}` : product.workspacePath || 'none', false)
+      uiImageProductId = product.id
+      productSelected = product.id
+    }
+    uiDesignSection = 'images'
+    openFeature('ui')
+  }
+
+  async function loadUiContext(): Promise<void> {
+    const previousDesign = uiDesignView
+    await Promise.all([loadProjectsList(), loadProducts()])
+    if (!workbenchDisposed && ui.view === 'ui') {
+      renderAll()
+      if (uiDesignSection === 'design' && uiDesignView === previousDesign) void uiDesignView?.reload()
+    }
+  }
+
+  /** 图片入口独立于 UI 设计记录，两页共用产品与项目上下文。 */
   function renderUiDesignShell(): string {
-    return `<div id="wb-ui-design-host" class="ud-host"></div>`
+    const tabs = `<div class="product-tabs" role="tablist" aria-label="UI 设计分区">
+      <button role="tab" aria-selected="${uiDesignSection === 'design'}" class="${uiDesignSection === 'design' ? 'active' : ''}" data-act="ui-section" data-section="design">界面设计</button>
+      <button role="tab" aria-selected="${uiDesignSection === 'images'}" class="${uiDesignSection === 'images' ? 'active' : ''}" data-act="ui-section" data-section="images">图片素材</button></div>`
+    const context = `<div class="feature-project-context"><div><b>${esc(projectLabel(ui.project))}</b><span>${uiDesignSection === 'images' ? '按产品管理网络生成与本地导入图片，可混合比较；无需先创建界面设计' : '界面设计按当前项目读取与保存；图片素材按产品管理'}</span></div>${projectSelect()}</div>`
+    if (uiDesignSection === 'design') return context + tabs + '<div id="wb-ui-design-host" class="ud-host"></div>'
+    const candidates = uiImageProducts()
+    const product = uiImageProduct()
+    const toolbar = `<div class="product-toolbar">
+      <label for="wb-ui-image-product">产品</label><select id="wb-ui-image-product" class="bug-project-select" aria-label="图片所属产品"><option value="">选择产品…</option>${candidates.map(item => `<option value="${esc(item.id)}" ${product?.id === item.id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select>
+      <button class="btn" data-act="ui-image-product-new">${ic('plus', 12)}新建产品</button>
+      ${product ? '<button class="btn" data-act="ui-image-product-edit">编辑产品 / 工作区</button>' : ''}
+      <button class="icon-btn" data-act="ui-context-refresh" title="刷新产品与项目">${ic('refresh', 13)}</button>
+      <span id="wb-ui-image-workspace" class="product-ws" title="${esc(product?.workspacePath ?? '')}">${ic('folder', 12)}${esc(product ? product.workspacePath || '未关联工作区，请编辑产品' : '选择产品后显示工作区')}</span></div>`
+    const error = productError ? `<div class="news-banner"><span>产品读取失败：${esc(productError)}</span><button class="btn" data-act="ui-context-refresh">重试</button></div>` : ''
+    const empty = `<div class="notes-empty bug-empty"><b>${productLoading ? '正在读取产品…' : candidates.length === 0 ? '当前范围还没有产品' : '选择一个产品，打开图片素材'}</b><span>图片归属于产品及其工作区。可在上方选择或新建产品，再生成、导入与比较图片。</span></div>`
+    return context + tabs + toolbar + error + (product ? '<div id="wb-product-images-host"></div>' : empty)
   }
 
   /** DEMO 视图外壳。 */
   function renderDemoShell(): string {
-    return `<div id="wb-demo-host" class="ud-host"></div>`
+    return `<div class="feature-project-context"><div><b>${esc(ui.project === 'all' || ui.project === 'none' ? '选择项目' : projectLabel(ui.project))}</b><span>网页 DEMO 按当前项目筛选；内置 Demo 可单独预览</span></div>${projectSelect()}</div><div id="wb-demo-host" class="ud-host"></div>`
   }
 
   /**
@@ -1392,7 +1508,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
 
   /** DEMO → 派发团队生成 HTML 产物（feature=demo.build；工具 workbench_demo_publish 落盘）。 */
   async function buildDemoHtml(demo: { id: string; title: string; layoutMode: string; uiDesignId: string; themeId: string; platform: string }): Promise<void> {
-    const projectId = currentProjectId()
+    const projectId = selectedProjectId()
     if (projectId === '') { toast('先选择一个项目'); return }
     if (!window.confirm(`AI 将按 UI 设计生成「${demo.title}」的页面 HTML（${demo.layoutMode === 'multi' ? '多文件' : '单文件'}）。继续？`)) return
     /* 取关联 UI 设计的页面清单与主题令牌 */
@@ -1452,10 +1568,10 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
 
   /** UI 设计 → 派发团队生成（feature=ui.design；走 startAgentDispatch + 页内会话）。 */
   async function generateUiDesign(design: { id: string; name: string; pages: Array<{ id: string; name: string }> }): Promise<void> {
-    const projectId = currentProjectId()
+    const projectId = selectedProjectId()
     if (projectId === '') { toast('先选择一个项目'); return }
-    const product = productOf(productSelected)
-    const map = productMaps.find(m => m.id === productMapSelected)
+    const product = uiImageProducts().find(item => item.id === productSelected)
+    const map = product ? productMaps.find(m => m.id === productMapSelected && m.productId === product.id) : undefined
     if (!window.confirm(`AI 将按${map ? `导图「${map.name}」` : '当前产品设计'}规划页面清单并生成设计规范（可能消耗额度）。继续？`)) return
     const nodeLines = map !== undefined && Array.isArray((map.graph as any)?.nodes)
       ? ((map.graph as any).nodes as any[]).filter(n => n.kind !== 'root').slice(0, 60)
@@ -1490,7 +1606,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
     const started = await startAgentDispatch({
       ideaId: '', runId: '', teamId: '', feature: 'ui.design',
       goal: prompt, ideaTitle: design.name, ideaBrief: product?.description ?? '',
-      workspacePath: product?.workspacePath ?? '', timeoutMs: 20 * 60 * 1000,
+      workspacePath: product?.workspacePath ?? projects.find(project => project.id === projectId)?.workspacePath ?? '', timeoutMs: 20 * 60 * 1000,
       allowNoIdea: true,
     } as any, {
       event: (event: any) => chat?.ingest(event),
@@ -1531,7 +1647,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
   }
   let uiDesignDispatch: { dispatchId: string; sessionId: string; teamName: string } | null = null
 
-  /** DEMO 视图常驻（自持 DOM），按当前视图显隐。 */
+  /** 离开 DEMO 时销毁视图，确保游戏 iframe 停止运行。 */
   let demoView: DemoViewHandle | null = null
   function ensureDemoView(): DemoViewHandle | null {
     const host = $id('wb-demo-host')
@@ -1548,11 +1664,11 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       esc,
       toast,
       confirm: message => window.confirm(message),
-      getProjectId: () => currentProjectId(),
-      getProjectName: () => projectByPath(ui.project)?.name ?? '当前项目',
+      getProjectId: () => selectedProjectId(),
+      getProjectName: () => ui.project !== 'all' && ui.project !== 'none' ? projectLabel(ui.project) : '请选择项目',
       themes: () => themesForRender().map(t => ({ id: t.id, name: t.name, platform: t.platform, hint: t.hint })),
       designs: async () => {
-        const projectId = currentProjectId()
+        const projectId = selectedProjectId()
         if (projectId === '') return []
         const res = await fetch(`${API}/ui-designs?projectId=${encodeURIComponent(projectId)}`)
         if (!res.ok) return []
@@ -1565,6 +1681,7 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
       openModal,
       closeModal,
       onBuild: demo => { void buildDemoHtml(demo) },
+      openWorkflowTemplates: () => { ui.view = 'wftpl'; renderAll() },
     })
     demoView.mount()
     return demoView
@@ -1719,37 +1836,37 @@ export function mountWorkbench(hostEl: HTMLElement, dshCtx?: DshClientContext): 
         <button class="btn" data-act="portal-load" title="重新读取项目 / Bug / 测试">${ic('refresh', 13)}刷新</button>
         <button class="btn-primary" data-act="portal-new">${ic('plus', 14)}新建项目 / 产品</button></div>
     </div>
-    <div id="wb-workflow-summary"></div>
     <div class="portal-sec-head"><h2>项目 / 产品</h2><span>${cards.length} 个项目 · 卡片内可编辑、删除</span></div>
     <div class="portal-projects">${cardAll}${cardProjects}${cardNone}</div>
     ${cards.length === 0 ? `<div class="portal-empty">${ic('layers', 16)}<div><b>还没有项目</b><span>新建一个项目 / 产品并关联 DSH 工作区，任务、Bug、测试、笔记就会按项目归拢。</span></div><button class="btn" data-act="portal-new">${ic('plus', 12)}新建</button></div>` : ''}
-    <div class="portal-sec-head"><h2>功能区</h2><span>按业务分组 · 每组整行铺满，卡片随宽度自适应</span></div>
-    ${featureGroups}
-    ${agentPanel.sectionHtml()}`
+    <div id="wb-workflow-summary"></div>
+    <details class="portal-feature-disclosure"><summary><b>全部功能</b><span>${features.length} 项功能按业务分组</span></summary>${featureGroups}</details>
+    <details class="portal-feature-disclosure"><summary><b>智能体团队</b><span>管理团队与角色配置</span></summary>${agentPanel.sectionHtml()}</details>`
   }
 
   let ideaView: IdeaViewHandle | null = null
   let uiDesignView: UiDesignViewHandle | null = null
+  let uiDesignHost: HTMLElement | null = null
+  let uiDesignScope = ''
 
   /** UI 设计视图常驻（自持 DOM），按当前视图显隐。 */
   function ensureUiDesignView(): UiDesignViewHandle | null {
     const host = $id('wb-ui-design-host')
     if (host === null) return null
-    /* 首次进入时确保统一项目清单已加载（currentProjectId 的兜底依赖它） */
-    if (projects.length === 0) void loadProjectsList()
-    /* 关键：视图切换会重建 #wb-generic 的 innerHTML，旧宿主 DOM 已被销毁。
-       此时缓存的视图实例虽然还在，但它的 root 已脱离文档，必须重新 mount。 */
     if (uiDesignView !== null) {
       if (host.childElementCount > 0) { uiDesignView.render(); return uiDesignView }
+      uiDesignView.destroy()
       uiDesignView = null
     }
+    uiDesignHost = host
+    uiDesignScope = selectedProjectId()
     uiDesignView = createUiDesignView(host, {
       api: API,
       esc,
       toast,
       confirm: message => window.confirm(message),
-      getProjectId: () => currentProjectId(),
-      getProjectName: () => projectByPath(ui.project)?.name ?? '当前项目',
+      getProjectId: () => selectedProjectId(),
+      getProjectName: () => ui.project !== 'all' && ui.project !== 'none' ? projectLabel(ui.project) : '请选择项目',
       themes: () => themesForRender().map(t => ({ id: t.id, name: t.name, platform: t.platform, hint: t.hint })),
       ensureStyles: css => ensureExtraCss(css),
       onBuildDemo: (design, pageId) => {
@@ -4520,6 +4637,7 @@ ${lines}
       </select>`
     const tabs = `<div class="product-tabs">
       ${(['map', 'notes', 'modules'] as const).map(tab => `<button class="${productTab === tab ? 'active' : ''}" data-act="product-tab" data-tab="${tab}">${tab === 'map' ? `思维导图（${productMaps.length}）` : tab === 'notes' ? `设计笔记（${productNoteList(product).length}）` : `模块（${productModuleList(product).length}）`}</button>`).join('')}
+      <button data-act="product-images-open" title="在 UI 设计中打开当前产品的图片素材">图片素材 ${ic('arrowR', 12)}</button>
       ${scopeSelect}
     </div>`
     let body = ''
@@ -4782,13 +4900,19 @@ ${lines}
   async function loadProducts(silent = false): Promise<void> {
     if (productLoading) return
     productLoading = true
-    if (!silent) { productError = ''; if (ui.view === 'product') renderContent() }
+    const revision = productListRevision
+    if (!silent) { productError = ''; if (ui.view === 'product' || isUiImages()) renderContent() }
     try {
       const suffix = showArchived ? '?archived=1' : ''
       const [pRes, nRes] = await Promise.all([fetch(`${API}/products${suffix}`), fetch(`${API}/notes${suffix}`)])
       if (!pRes.ok || !nRes.ok) throw new Error(`HTTP ${pRes.status}/${nRes.status}`)
       const pData = await pRes.json() as { products?: Product[]; demos?: ProductDemo[]; modules?: Module[] }
       const nData = await nRes.json() as { notes?: Note[]; notebooks?: Notebook[] }
+      if (revision !== productListRevision) {
+        productLoading = false
+        await loadProducts(silent)
+        return
+      }
       products = Array.isArray(pData.products) ? pData.products : []
       /* 旧 product_demos 已按 D6 清理（1.13）；DEMO 改由独立视图读 /demos */
       productModules = Array.isArray(pData.modules) ? pData.modules : []
@@ -4812,9 +4936,9 @@ ${lines}
       productError = ''
     } catch (cause) { if (!silent) productError = String((cause as Error).message ?? cause) }
     productLoading = false
-    if (ui.view !== 'product') return
+    if (workbenchDisposed || (ui.view !== 'product' && !isUiImages())) return
     const sig = JSON.stringify({
-      p: products.map(p => [p.id, p.name, p.updatedAt, p.mindmap.length]),
+      p: products.map(p => [p.id, p.name, p.workspacePath, p.projectId, p.updatedAt, p.mindmap.length]),
       n: notes.length,
       g: [demoProgress?.step, demoProgress?.status, demoProgress?.message],
     })
@@ -5836,15 +5960,22 @@ ${common}
       const res = await fetch(`${API}/products`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product: { id: id || undefined, name, description: $id<HTMLTextAreaElement>('wb-prod-desc')?.value ?? '', workspacePath } }) })
       const data = await res.json() as { product?: Product; message?: string }
       if (!res.ok || !data.product) throw new Error(data.message ?? `HTTP ${res.status}`)
+      productListRevision++
       const index = products.findIndex(p => p.id === data.product!.id)
       if (index >= 0) products[index] = data.product
       else products.unshift(data.product)
+      if (isUiImages()) {
+        const project = projects.find(item => item.id === data.product!.projectId)
+        setProject(project ? project.workspacePath || `prj:${project.id}` : data.product.workspacePath || 'none', false)
+        uiImageProductId = data.product.id
+      }
       productSelected = data.product.id
       productPicked = productDefaultPicked(data.product)
       productNodeSelected = null
       closeModal()
       await loadProducts(true)
-      renderContent()
+      if (isUiImages()) renderAll()
+      else renderContent()
       toast('产品已保存')
     } catch (cause) { toast(`保存失败：${String((cause as Error).message ?? cause)}`) }
   }
@@ -6506,10 +6637,17 @@ ${docList}
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       toast(archived ? '已取消归档' : '已归档')
-      if (target === 'products') await loadProducts(true)
+      if (target === 'products') {
+        productListRevision++
+        products = products.map(product => product.id === id ? { ...product, archivedAt: archived ? '' : new Date().toISOString() } : product)
+          .filter(product => showArchived || !product.archivedAt)
+        await loadProducts(true)
+        if (isUiImages()) closeModal()
+      }
       else if (target === 'modules') productModules = productModules.map(m => m.id === id ? { ...m, archivedAt: archived ? '' : new Date().toISOString() } : m)
       else notes = notes.map(n => n.id === id ? { ...n, archivedAt: archived ? '' : new Date().toISOString() } : n)
-      if (ui.view === 'product') renderContent()
+      if (target === 'products' && isUiImages()) renderAll()
+      else if (ui.view === 'product') renderContent()
     } catch (cause) { toast(`操作失败：${String((cause as Error).message ?? cause)}`) }
   }
 
@@ -6898,7 +7036,9 @@ ${docList}
     try {
       const res = await fetch(`${API}/products/${encodeURIComponent(id)}`, { method: 'DELETE' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      productListRevision++
       products = products.filter(p => p.id !== id)
+      if (uiImageProductId === id) uiImageProductId = ''
       productDemos = productDemos.filter(d => d.productId !== id)
       productSelected = products[0]?.id ?? null
       if (product?.workspacePath !== undefined && ui.project === product.workspacePath) ui.project = 'all'
@@ -8038,7 +8178,7 @@ ${lines}`
   function renderDetail(): void {
     const el = detail()
     if (!el) return
-    const show = !['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl', 'workflows', 'wfrun'].includes(ui.view)
+    const show = !['portal', 'calendar', 'focus', 'stats', 'news', 'notes', 'bugs', 'product', 'test', 'assets', 'flow', 'wftpl', 'workflows', 'wfrun', 'ui', 'demo'].includes(ui.view)
     el.classList.toggle('hide', !show)
     if (!show) { el.innerHTML = ''; return }
     const t = selectedTask()
@@ -8899,10 +9039,22 @@ ${lines}`
       }
       if (act === 'product-new') { openProductEdit(); return }
       if (act === 'product-edit') { openProductEdit(productSelected ?? undefined); return }
+      if (act === 'ui-section') {
+        const previousSection = uiDesignSection
+        const previousDesign = uiDesignView
+        uiDesignSection = actEl.getAttribute('data-section') === 'images' ? 'images' : 'design'
+        renderContent()
+        if (uiDesignSection === 'design' && previousSection !== 'design' && uiDesignView === previousDesign) void uiDesignView?.reload()
+        return
+      }
+      if (act === 'ui-image-product-new') { openProductEdit(undefined, ui.project !== 'all' && ui.project !== 'none' && !ui.project.startsWith('prj:') ? ui.project : undefined); return }
+      if (act === 'ui-image-product-edit') { const product = uiImageProduct(); if (product) openProductEdit(product.id); return }
+      if (act === 'ui-context-refresh') { void loadUiContext(); return }
+      if (act === 'product-images-open') { openProductImages(); return }
       if (act === 'product-save') { void saveProduct(actEl.getAttribute('data-id') ?? ''); return }
       if (act === 'product-delete') { void deleteProduct(actEl.getAttribute('data-id') ?? ''); return }
       if (act === 'product-tab') { productTab = (actEl.getAttribute('data-tab') as 'map' | 'notes' | 'modules') ?? 'map'; renderContent(); return }
-      if (act === 'goto-ui') { ui.view = 'ui'; renderAll(); return }
+      if (act === 'goto-ui') { uiDesignSection = 'design'; openFeature('ui'); return }
       if (act === 'goto-demo') { ui.view = 'demo'; renderAll(); return }
       if (act === 'product-refresh') { void loadProducts(); return }
       if (act === 'product-node-new') { openNodeQuickAdd('child', (actEl.getAttribute('data-type') as ProductNodeKind) ?? 'feature'); return }
@@ -9181,6 +9333,7 @@ ${lines}`
       if (ui.view === 'notes') void loadNotes()
       if (ui.view === 'bugs') void loadBugs()
       if (ui.view === 'product') void loadProducts()
+      if (ui.view === 'ui') void loadUiContext()
       if (ui.view === 'test') void loadTests()
       return
     }
@@ -9347,6 +9500,7 @@ ${lines}`
       if (ui.view === 'notes') void loadNotes()
       if (ui.view === 'bugs') void loadBugs()
       if (ui.view === 'product') void loadProducts()
+      if (ui.view === 'ui') void loadUiContext()
       if (ui.view === 'test') void loadTests()
     } catch (cause) {
       loadError = String((cause as Error).message ?? cause)
@@ -9466,7 +9620,7 @@ ${lines}`
     void loadBugs(true)
   }, 6000)
   const productTick = window.setInterval(() => {
-    if (!loaded || ui.view !== 'product' || productLoading) return
+    if (!loaded || (ui.view !== 'product' && !isUiImages()) || productLoading) return
     void loadProducts(true)
   }, 12_000)
   /* Demo 生成进度：生成中 4s 快轮询（本地渲染 + AI 回写共用） */
@@ -9494,6 +9648,14 @@ ${lines}`
       disposeFlowCanvas()
       try { ideaView?.destroy() } catch (cause) { console.warn('[dsh-workbench] 灵感视图卸载失败', cause) }
       ideaView = null
+      demoView?.destroy()
+      demoView = null
+      uiDesignView?.destroy()
+      uiDesignView = null
+      uiDesignHost = null
+      productImagesView?.destroy()
+      productImagesView = null
+      productImagesHost = null
       if (saveTimer !== 0) window.clearTimeout(saveTimer)
       if (noteSaveTimer !== 0) window.clearTimeout(noteSaveTimer)
       if (toastTimer !== 0) window.clearTimeout(toastTimer)

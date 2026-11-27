@@ -1,0 +1,41 @@
+{
+  "date": "2026-11-27",
+  "scope": "Planning documents and static interactive prototype only",
+  "repositoriesCovered": 27,
+  "linksChecked": 72,
+  "viewports": [
+    {
+      "width": 1440,
+      "scrollWidth": 1440,
+      "inspectorVisible": true
+    },
+    {
+      "width": 1100,
+      "scrollWidth": 1100,
+      "inspectorVisible": false
+    },
+    {
+      "width": 900,
+      "scrollWidth": 900,
+      "inspectorVisible": false
+    },
+    {
+      "width": 640,
+      "scrollWidth": 640,
+      "inspectorVisible": false
+    }
+  ],
+  "checks": [
+    "global and project navigation",
+    "hidden global project tabs",
+    "resume project",
+    "input preservation within prototype session",
+    "asset shelf",
+    "candidate and version comparison",
+    "button text contrast",
+    "no horizontal page overflow"
+  ],
+  "browserErrors": [],
+  "externalRequests": [],
+  "evidence": "C:\\Users\\gh\\AppData\\Local\\Temp\\dsh-game-workbench-redesign-20261127"
+}

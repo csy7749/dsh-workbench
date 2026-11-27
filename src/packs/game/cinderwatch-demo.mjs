@@ -1,0 +1,82 @@
+const vendorModules = [
+  'src/00-util.js', 'src/10-gfx.js', 'src/20-post.js', 'src/29-biome.js', 'src/30-layout.js',
+  'src/31-terrain.js', 'src/32-props.js', 'src/33-flora.js', 'src/40-fx.js', 'src/41-weather.js',
+  'src/50-rig.js', 'src/51-bestiary.js', 'src/60-towers.js', 'src/61-monsters.js', 'src/62-game.js',
+  'src/70-pixelfont.js', 'src/72-ui.js', 'src/80-audio.js', 'src/90-main.js', 'src/shell.html',
+  'vendor/three.module.min.js', 'LICENSE', 'PROVENANCE.json', 'vendor/LICENSE-three.txt',
+]
+
+/** Read-only gallery metadata. Runtime and workflow files remain owned by their existing packs. */
+export const CINDERWATCH_DEMO = Object.freeze({
+  id: 'cinderwatch',
+  sourceKind: 'game',
+  title: 'Cinderwatch · 烬火守望',
+  category: '游戏',
+  summary: 'Three.js 微缩沙盘塔防：四类防御塔、敌人波次、金币经济与自动指挥接管。',
+  description: '可离线运行的完整 3D 塔防 Demo。上游游戏源码保持独立归档；工作流节点负责把需求、规则、构建、试玩和人工验收串成可追溯闭环。',
+  tags: ['Three.js', '3D 塔防', '离线 HTML', '工作流'],
+  version: 'cinderwatch@1',
+  thumbnailUrl: '/workbench-api/demos/library/cinderwatch/thumbnail',
+  previewUrl: '/workbench-api/demos/library/cinderwatch/view',
+  playUrl: '/workbench-api/demos/library/cinderwatch/play',
+  workflowTemplateId: 'game-cinderwatch-test',
+  workflowTemplateName: '测试 · Cinderwatch 3D 塔防 · 游戏完整闭环',
+  nodes: [
+    { id: 'input.brief', title: '需求输入' },
+    { id: 'game.gdd', title: '玩法设计稿' },
+    { id: 'game.rules', title: '玩法规则' },
+    { id: 'check.rules', title: '规则校验' },
+    { id: 'human.review', title: '批准玩法范围' },
+    { id: 'game.create', title: '创建可玩工程' },
+    { id: 'game.playtest', title: '游戏自动试玩' },
+    { id: 'game.revise', title: '按试玩证据修订' },
+    { id: 'game.build', title: '构建游戏' },
+    { id: 'game.package', title: '导出离线游戏' },
+    { id: 'game.handoff-review', title: '人工试玩与交付验收' },
+  ],
+  files: [
+    { group: '游戏运行时 · 上游源码', paths: vendorModules.map(path => `assets/vendor/cinderwatch/${path}`) },
+    { group: 'Cinderwatch 宿主适配', paths: [
+      'src/host/native-game-cinderwatch.mjs',
+      'src/host/native-game-cinderwatch-playtest.mjs',
+    ] },
+    { group: '工作流节点与证据规则', paths: [
+      'src/packs/game/nodes.ts',
+      'src/packs/game/validators.mjs',
+      'src/packs/game/review.mjs',
+      'src/packs/game/runtime.mjs',
+      'src/packs/templates.ts',
+    ] },
+    { group: '共享游戏服务（由多个 Demo 共用）', paths: [
+      'src/host/native-game-studio.mjs',
+      'src/host/native-game-service.mjs',
+      'src/host/native-game-tools.ts',
+      'src/host/native-game-http.ts',
+      'src/host/workflow-native-game.mjs',
+      'src/host/workflow-runner.mjs',
+    ] },
+    { group: '验证脚本', paths: [
+      'scripts/verify-native-game-cinderwatch.mjs',
+      'scripts/verify-native-game-cinderwatch-browser.mjs',
+      'scripts/verify-native-game-cinderwatch-workflow.mjs',
+      'scripts/verify-native-game-cinderwatch-e2e.mjs',
+    ] },
+    { group: '说明与许可', paths: [
+      'docs/game-cinderwatch-template.md',
+      'THIRD_PARTY_NOTICES.md',
+    ] },
+  ],
+  acceptance: [
+    '自动浏览器试玩：WebGL 渲染、建塔扣金、指挥接管/交还、暂停、波次、击杀、经济、移动端布局。',
+    '离线导出：使用内嵌 Three.js 与程序化资源，预览和导出均不依赖联网素材。',
+    '人工验收：实际打开导出文件，试玩升级、出售、漏怪扣血、失败后重开、地图变化与听感。',
+    '自动试玩证据与人工验收状态分开显示；模拟战斗时间不作为实际帧率结论。',
+  ],
+  verification: [
+    { command: 'npm run verify:game-studio:cinderwatch', scope: '适配、规则、服务、工作流边界与取消行为' },
+    { command: 'npm run verify:game-studio:cinderwatch:browser', scope: '本机已安装浏览器中的真实渲染与交互' },
+    { command: 'npm run verify:game-studio:cinderwatch:e2e', scope: '生产 bundle、HTTP、真实浏览器及离线导出闭环' },
+  ],
+  license: 'MIT',
+  provenance: 'Cinderwatch upstream commit 6640b81286df8b1fd2e5a745b48211c4a9323f83; Three.js r170; see assets/vendor/cinderwatch/PROVENANCE.json.',
+})

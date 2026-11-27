@@ -10,7 +10,8 @@ import { WorkflowCanvasStore } from '../src/host/workflow-canvas-store.ts'
 
 const graph = templateOf('game-starlight-test')
 assert(graph)
-assert(templateList().some(item => item.id === 'game-starlight-test'))
+assert(templateList().some(item => item.id === 'game-cinderwatch-test'))
+assert(!templateList().some(item => item.id === 'game-starlight-test'), 'legacy template stays available by ID, outside recommendations')
 assert.deepEqual(validateGraph(graph).filter(issue => issue.level === 'error' || issue.code === 'capability_unavailable'), [])
 assert.equal(graph.nodes.length, 14)
 assert.equal(graph.nodes.filter(node => node.type === 'flow.join').length, 2)

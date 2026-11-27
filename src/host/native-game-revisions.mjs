@@ -2,7 +2,8 @@ import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, rena
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { nativeGameFiles as files } from './native-game-studio.mjs'
-import { gameTemplateSource } from './native-game-template.mjs'
+import { gameTemplateSource, threeGameTemplateSource } from './native-game-template.mjs'
+import { cinderwatchTemplateSource } from './native-game-cinderwatch.mjs'
 import { validateGamePlaytestEvidence } from '../packs/game/review.mjs'
 
 const fail = code => { throw new Error(code) }
@@ -167,8 +168,12 @@ export function createNativeGameRevisions({ studio, playtester, maxCandidates = 
         } finally { release() }
       } finally { releaseGuard() }
     },
-    /** The only automatic repair is an explicit return to the original approved
-     * collector implementation; never change rules or claim arbitrary AI repair. */
-    canonical(args) { return this.propose({ ...args, source: gameTemplateSource, reason: '真实试玩失败：恢复已批准的 canvas-collector@1 原创标准实现；规则、方向及采用素材保持当前批准值。', provider: 'native-template-repair' }) },
+    /** Restore the approved template for this project while keeping its rules. */
+    canonical(args) {
+      const { manifest } = studio.currentState(args)
+      const template = manifest?.templateId
+      const source = template === 'cinderwatch' ? cinderwatchTemplateSource() : template === 'three-collector' ? threeGameTemplateSource : gameTemplateSource
+      return this.propose({ ...args, source, reason: '真实试玩失败：恢复已批准的 ' + template + '@1 标准实现；规则、方向及采用素材保持当前批准值。', provider: 'native-template-repair' })
+    },
   }
 }

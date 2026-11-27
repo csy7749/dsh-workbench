@@ -879,6 +879,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
   const [run, setRun] = useState<RunView | null>(null)
   const [runDetailsOpen, setRunDetailsOpen] = useState(true)
   const [focusReview, setFocusReview] = useState(false)
+  const [focusRunNodeId, setFocusRunNodeId] = useState('')
   const [expandedRunNodes, setExpandedRunNodes] = useState<Record<string, boolean>>({})
   const [history, setHistory] = useState<any[]>([])
   const [runText, setRunText] = useState('')
@@ -893,6 +894,14 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
     review?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     setFocusReview(false)
   }, [focusReview, runDetailsOpen, run?.waiting?.nodeId])
+
+  useEffect(() => {
+    if (!focusRunNodeId || !runDetailsOpen) return
+    const node = Array.from(runFocusRef.current?.querySelectorAll<HTMLElement>('[data-run-node]') ?? []).find(el => el.getAttribute('data-run-node') === focusRunNodeId)
+    node?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    node?.focus({ preventScroll: true })
+    setFocusRunNodeId('')
+  }, [focusRunNodeId, runDetailsOpen, run?.runId])
 
   const editorBaseline = useRef({ key: '', content: '' })
   const applyRun = (data: any, replaceEditor = false): void => {
@@ -1178,6 +1187,9 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
     h('b', null, '打开详情'))
     const waiting = run.waiting
     const nodeGroups = groupRunNodes(run)
+    const attentionStep = waiting?.nodeId
+      ? run.steps.find(step => step.nodeId === waiting.nodeId)
+      : run.steps.find(step => ['failed', 'paused'].includes(step.state))
     const renderRunSession = (session: RunSessionSummary): ReactElement => h('div', { key: session.id, className: 'wf-run-session' },
       h('div', { className: 'wf-run-session-info' },
         h('b', null, session.purpose + ' · ' + session.status),
@@ -1224,6 +1236,23 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
           h('span', null, '事件 ' + (run.events ?? []).length),
         ),
       ),
+      waiting !== null || run.pauseReason || run.auto?.reason || attentionStep
+        ? h('section', { className: 'wf-run-attention', 'data-wf-attention': '1' },
+            h('div', { className: 'wf-run-attention-copy' },
+              h('b', null, waiting?.kind === 'human' ? '待人工确认' : waiting ? '等待下一步' : '运行需要处理'),
+              attentionStep ? h('span', null, attentionStep.title) : null,
+              run.pauseReason || run.auto?.reason
+                ? h('p', null, [run.pauseReason, run.auto?.reason].filter(Boolean).join(' · ').slice(0, 420))
+                : waiting ? h('p', null, waiting.kind === 'human' ? '审核正文、记录需要的修改，再确认并继续。' : '查看当前节点并完成下一步操作。')
+                  : attentionStep ? h('p', null, attentionStep.state === 'failed' ? '此节点执行失败，查看会话与运行记录了解原因。' : '此节点已暂停，检查状态后可以恢复运行。') : null,
+            ),
+            attentionStep ? h('button', { type: 'button', className: 'wf-btn', onClick: () => {
+              const key = run.runId + ':' + attentionStep.nodeId
+              setExpandedRunNodes(current => ({ ...current, [key]: true }))
+              setFocusRunNodeId(attentionStep.nodeId)
+            } }, waiting?.kind === 'human' ? '打开审核节点' : '定位节点') : null,
+          )
+        : null,
       h('section', { className: 'wf-run-nodes', 'aria-label': '节点任务、产物与会话' },
         h('div', { className: 'wf-run-nodes-head' },
           h('b', null, '节点任务与结果'),
@@ -1234,7 +1263,7 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
           const gameLinks = !step.stale && step.content ? nativeGameLinks(step.content) : null
           const nativeEvidence = (run.nativeOperations ?? []).filter(operation => operation.node_id === step.nodeId).at(-1)
           const key = run.runId + ':' + step.nodeId
-          const expanded = expandedRunNodes[key] ?? (waiting?.nodeId === step.nodeId || ['running', 'waiting_review', 'failed'].includes(step.state))
+          const expanded = expandedRunNodes[key] ?? (waiting?.nodeId === step.nodeId || ['running', 'waiting_review', 'failed', 'paused'].includes(step.state))
           return h('article', { key, className: 'wf-run-node-card', 'data-run-node': step.nodeId, tabIndex: -1, 'data-st': step.stale ? 'stale' : step.state },
             h('button', { type: 'button', className: 'wf-run-node-toggle', 'aria-expanded': expanded, onClick: () => setExpandedRunNodes(current => ({ ...current, [key]: !expanded })) },
               h('span', { className: 'wf-run-node-number', 'aria-hidden': true }, String(index + 1).padStart(2, '0')),
@@ -1279,8 +1308,6 @@ export function CanvasPanel(props: CanvasScope = {}): ReactElement {
           h('div', { style: { padding: '0 10px' } }, ...nodeGroups.unassigned.map(renderRunSession)),
         ) : null,
       ),
-      run.pauseReason ? h('div', { className: 'wf-issue', 'data-lv': 'error' }, '停止原因：' + run.pauseReason) : null,
-      run.auto?.reason ? h('div', { className: 'wf-issue', 'data-lv': 'error' }, '自动执行：' + run.auto.reason) : null,
       (run.nativeOperations ?? []).filter(operation => operation.status === 'unknown').map(operation => h('button', { key: operation.attempt_id, className: 'wf-btn', disabled: runBusy, onClick: async () => {
         if (!window.confirm('该宿主操作的结果未知，可能已生成文件。放弃采用后会保留这些文件，恢复运行将创建新的尝试。确认已核查并放弃本次结果？')) return
         setRunBusy(true)

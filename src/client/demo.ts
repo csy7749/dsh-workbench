@@ -24,6 +24,8 @@ export interface DemoDeps {
   closeModal: () => void
   /** 派发 AI 生成 DEMO 产物（HTML）。 */
   onBuild?: (demo: DemoItem) => void
+  /** 打开工作流模板库。 */
+  openWorkflowTemplates?: () => void
 }
 
 export interface DemoVersion {
@@ -34,7 +36,17 @@ export interface DemoItem {
   id: string; projectId: string; uiDesignId: string; themeId: string
   layoutMode: 'single' | 'multi'; scope: string; kind: string; title: string
   entryPath: string; platform: string; status: string; currentVersionId: string
-  archivedAt?: string; createdAt?: string; updatedAt?: string; versions?: DemoVersion[]
+  thumbnailUrl?: string; archivedAt?: string; createdAt?: string; updatedAt?: string; versions?: DemoVersion[]
+}
+
+export interface DemoPack {
+  id: string; sourceKind: 'game' | 'builtin'; title: string; category: string; summary: string; description: string
+  tags: string[]; version: string; thumbnailUrl: string; previewUrl: string; playUrl?: string
+  workflowTemplateId: string; workflowTemplateName: string
+  nodes: Array<{ id: string; title: string }>
+  files: Array<{ group: string; paths: string[] }>
+  acceptance: string[]; verification: Array<{ command: string; scope: string }>
+  license: string; provenance: string
 }
 
 export interface DemoViewHandle {
@@ -50,12 +62,18 @@ export function createDemoView(host: HTMLElement, deps: DemoDeps): DemoViewHandl
   const esc = deps.esc
   let root: HTMLElement | null = null
   let demos: DemoItem[] = []
+  let packs: DemoPack[] = []
   let activeId = ''
+  let activeKind: 'pack' | 'web' = 'pack'
+  let filter: 'all' | 'game' | 'web' = 'all'
   let viewport: 'pc' | 'tablet' | 'mobile' = 'pc'
   let pageId = ''
   let loading = false
   let mounted = false
-  let tab: 'preview' | 'files' | 'versions' = 'preview'
+  // Built-in previews are opt-in: loading the library should not start a game
+  // (and its WebGL context) before the user asks to play it.
+  let previewClosed = true
+  let tab: 'preview' | 'files' | 'versions' | 'acceptance' = 'preview'
   let files: Array<{ path: string; role: string; bytes: number }> = []
   /** 关联 UI 设计的页面清单（用于预览的页面切换）。 */
   let pages: Array<{ id: string; name: string }> = []
@@ -71,6 +89,9 @@ export function createDemoView(host: HTMLElement, deps: DemoDeps): DemoViewHandl
   }
 
   const current = (): DemoItem | undefined => demos.find(d => d.id === activeId) ?? demos[0]
+  const currentPack = (): DemoPack | undefined => packs.find(demo => demo.id === activeId)
+  const visiblePacks = (): DemoPack[] => filter === 'web' ? [] : packs
+  const visibleDemos = (): DemoItem[] => filter === 'game' ? [] : demos
 
   /** 弹窗在 Shadow DOM 内，document.getElementById 取不到——必须从宿主 shadowRoot 查。 */
   function $el<T extends HTMLElement = HTMLElement>(id: string): T | null {
@@ -87,29 +108,34 @@ export function createDemoView(host: HTMLElement, deps: DemoDeps): DemoViewHandl
 
   async function reload(): Promise<void> {
     const projectId = deps.getProjectId()
-    if (projectId === '') { demos = []; render(); return }
     if (loading) return
+    const previousActiveKind = activeKind
+    const previousActiveId = activeId
     loading = true
     render()
     try {
-      const data = await api(`/demos?projectId=${encodeURIComponent(projectId)}&archived=1`)
+      const data = await api(`/demos/library?projectId=${encodeURIComponent(projectId)}`)
       demos = Array.isArray(data.demos) ? data.demos : []
+      packs = Array.isArray(data.packs) ? data.packs : []
       const seed = deps.seed()
       if (seed !== null && demos.length > 0) {
         const hit = demos.find(d => d.uiDesignId === seed.designId)
-        if (hit !== undefined) { activeId = hit.id; if (seed.pageId !== '') pageId = seed.pageId }
+        if (hit !== undefined) { activeId = hit.id; activeKind = 'web'; if (seed.pageId !== '') pageId = seed.pageId }
         deps.clearSeed()
       }
-      if (!demos.some(d => d.id === activeId)) activeId = demos[0]?.id ?? ''
-      const hit = current()
-      if (hit !== undefined) {
-        const detail = await api(`/demos/${hit.id}`)
+      if (activeKind === 'pack' && !packs.some(demo => demo.id === activeId)) activeId = packs[0]?.id ?? ''
+      if (activeKind === 'web' && !demos.some(demo => demo.id === activeId)) activeId = demos[0]?.id ?? ''
+      if (activeId === '' && packs.length > 0) { activeKind = 'pack'; activeId = packs[0].id }
+      if (activeKind === 'pack' && (previousActiveKind !== 'pack' || previousActiveId !== activeId)) previewClosed = true
+      const hit = activeKind === 'web' ? current() : undefined
+      if (hit !== undefined && projectId !== '') {
+        const detail = await api(`/demos/${encodeURIComponent(hit.id)}`)
         if (detail.demo?.versions) {
           const index = demos.findIndex(d => d.id === hit.id)
           if (index >= 0) demos[index] = { ...demos[index], ...detail.demo }
         }
         await loadPagesOf(hit)
-        files = await loadFiles(hit.id)
+        files = await loadFiles(projectId, hit.id)
       }
     } catch (cause) {
       deps.toast(`加载 DEMO 失败：${String((cause as Error).message ?? cause)}`)
@@ -119,9 +145,9 @@ export function createDemoView(host: HTMLElement, deps: DemoDeps): DemoViewHandl
   }
 
   /** 文件索引（B3 接后端 tree 接口；当前按版本尝试读取元信息）。 */
-  async function loadFiles(demoId: string): Promise<Array<{ path: string; role: string; bytes: number }>> {
+  async function loadFiles(projectId: string, demoId: string): Promise<Array<{ path: string; role: string; bytes: number }>> {
     try {
-      const data = await api(`/files/tree?demoId=${encodeURIComponent(demoId)}`)
+      const data = await api(`/files/tree?projectId=${encodeURIComponent(projectId)}&demoId=${encodeURIComponent(demoId)}`)
       return Array.isArray(data.files) ? data.files : []
     } catch { return [] }
   }
@@ -180,45 +206,44 @@ export function createDemoView(host: HTMLElement, deps: DemoDeps): DemoViewHandl
       </div>`).join('')}</div>`
   }
 
-  function render(): void {
-    if (root === null) return
-    const projectId = deps.getProjectId()
-    if (projectId === '') {
-      root.innerHTML = `<div class="ud-view"><div class="ud-empty">先在「项目门户」选择一个项目，再使用 DEMO。</div></div>`
-      return
-    }
-    if (loading && demos.length === 0) {
-      root.innerHTML = `<div class="ud-view"><div class="ud-empty">加载中…</div></div>`
-      return
-    }
-    const demo = current()
-    const head = `<div class="ud-head">
-      <div>
-        <div class="ud-eyebrow">DEMO</div>
-        <h2>${esc(demo?.title ?? '暂无 DEMO')}</h2>
-        <p class="sub">${demo
-          ? `${esc(deps.getProjectName())} · ${demo.layoutMode === 'multi' ? '多文件' : '单文件内导航'} · ${(demo.versions ?? []).length} 个版本`
-          : '按 UI 设计生成可交互 HTML；支持版本、按页优化与归档'}</p>
-      </div>
-      <div class="ud-actions">
-        ${demo ? `<span class="ud-badge ${demo.layoutMode === 'multi' ? 'multi' : 'single'}" title="布局模式创建后不可更改">${demo.layoutMode === 'multi' ? '多文件 · 不可改' : '单文件 · 不可改'}</span>` : ''}
-        ${demo ? `<select class="ud-sel" data-demo="theme">${themeOptions(demo.themeId)}</select>` : ''}
-        ${demo ? `<button class="ud-btn" data-demo="archive">${(demo.archivedAt ?? '') === '' ? '⌸ 归档' : '↩ 恢复'}</button>` : ''}
-        ${demo ? `<button class="ud-btn" data-demo="build">✦ AI 生成页面</button>` : ''}
-        <button class="ud-btn primary" data-demo="generate">${demo ? '重新创建' : '＋ 新建 DEMO'}</button>
-      </div>
+  function renderCard(title: string, summary: string, kind: string, id: string, selected: boolean, thumbnailUrl: string, fallback: string, action: 'pick-pack' | 'pick'): string {
+    return `<button class="ud-library-card ${selected ? 'active' : ''}" data-demo="${action}" data-id="${esc(id)}">
+      <div class="ud-library-cover"><span class="fallback">${esc(fallback)}</span>${thumbnailUrl ? `<img src="${esc(thumbnailUrl)}" alt="${esc(title)} 缩略图" loading="lazy">` : ''}<span class="kind">${esc(kind)}</span></div>
+      <div class="ud-library-card-body"><b>${esc(title)}</b><span>${esc(summary)}</span></div>
+    </button>`
+  }
+
+  function renderPackFiles(pack: DemoPack): string {
+    return `<div class="ud-panel-body"><div class="ud-source-groups">${pack.files.map(group => `<section class="ud-source-group"><b>${esc(group.group)} · ${group.paths.length}</b>${group.paths.map(path => `<div class="ud-source-path">${esc(path)}</div>`).join('')}</section>`).join('')}</div></div>`
+  }
+
+  function renderPackDetail(pack: DemoPack): string {
+    const tabs = `<div class="ud-tabs">
+      <button class="ud-tab ${tab === 'preview' ? 'active' : ''}" data-demo="tab" data-tab="preview">运行预览</button>
+      <button class="ud-tab ${tab === 'files' ? 'active' : ''}" data-demo="tab" data-tab="files">节点与代码 · ${pack.nodes.length} 节点</button>
+      <button class="ud-tab ${tab === 'acceptance' ? 'active' : ''}" data-demo="tab" data-tab="acceptance">验收与来源</button>
     </div>`
-    if (demo === undefined) {
-      root.innerHTML = `<div class="ud-view">${head}<div class="ud-empty">这个项目还没有 DEMO。点「＋ 新建 DEMO」按 UI 设计生成，或直接用描述生成。</div></div>`
-      bind()   /* 空态也要绑定：否则「＋ 新建 DEMO」按钮没有处理器（onclick===null） */
-      return
+    let body = ''
+    if (tab === 'preview') {
+      body = `<div class="ud-panel"><div class="ud-frame-bar">
+        ${(['pc', 'tablet', 'mobile'] as const).map(v => `<button class="ud-vp ${viewport === v ? 'on' : ''}" data-demo="vp" data-v="${v}">${v === 'pc' ? 'PC' : v === 'tablet' ? '平板' : '移动'}</button>`).join('')}
+        <span style="margin-left:auto;display:flex;gap:4px">
+          ${previewClosed ? '' : '<button class="ud-btn tiny" data-demo="close-preview">关闭试玩</button>'}
+          <button class="ud-btn tiny" data-demo="open-pack">↗ 新窗口试玩</button>
+        </span>
+      </div>${previewClosed
+        ? '<div class="ud-empty"><p role="status">试玩已关闭</p><button class="ud-btn" data-demo="start-preview">重新试玩</button></div>'
+        : `<div class="ud-frame-wrap ${viewport}"><iframe class="ud-iframe" sandbox="allow-scripts allow-forms allow-modals" src="${esc(pack.previewUrl)}" title="${esc(pack.title)}"></iframe></div>`}
+      <div class="ud-detail-copy">${esc(pack.description)}<div class="ud-chip-row">${pack.tags.map(tag => `<span class="ud-chip">${esc(tag)}</span>`).join('')}</div></div></div>`
+    } else if (tab === 'files') {
+      body = `<div class="ud-panel"><div class="ud-detail-head"><b>工作流节点与关联源码</b><span class="spacer"></span><button class="ud-btn tiny" data-demo="workflow-templates">打开工作流模板库</button></div><div class="ud-detail-copy"><p>模板：${esc(pack.workflowTemplateName)}（${esc(pack.workflowTemplateId)}）</p><div class="ud-chip-row">${pack.nodes.map(node => `<span class="ud-chip" title="${esc(node.id)}">${esc(node.title)} · ${esc(node.id)}</span>`).join('')}</div></div>${renderPackFiles(pack)}</div>`
+    } else {
+      body = `<div class="ud-panel"><div class="ud-panel-head"><div><b>验收范围</b><span>自动试玩、离线交付和真人验收分别记录</span></div></div><div class="ud-panel-body"><div class="ud-acceptance">${pack.acceptance.map(item => `<div><i>✓</i><span>${esc(item)}</span></div>`).join('')}</div><div class="ud-source-groups" style="margin-top:14px"><section class="ud-source-group"><b>验证入口</b>${pack.verification.map(item => `<div class="ud-source-path"><code>${esc(item.command)}</code><br>${esc(item.scope)}</div>`).join('')}</section><section class="ud-source-group"><b>许可与来源</b><div class="ud-source-path">${esc(pack.license)} · ${esc(pack.provenance)}</div></section></div></div></div>`
     }
-    const list = `<div class="ud-demo-list"><div class="ud-panel-head"><div><b>DEMO</b><span>${demos.filter(d => (d.archivedAt ?? '') === '').length} 个</span></div></div>
-      <div class="ud-dlist">${demos.map(d => `
-        <div class="ud-ditem ${d.id === demo.id ? 'active' : ''}" data-demo="pick" data-id="${esc(d.id)}">
-          <b>${esc(d.title)}</b>
-          <span>${esc(d.themeId)} · ${d.layoutMode === 'multi' ? '多文件' : '单文件'}${(d.archivedAt ?? '') !== '' ? ' · 已归档' : ''}</span>
-        </div>`).join('')}</div></div>`
+    return `<div>${tabs}${body}</div>`
+  }
+
+  function renderWebDetail(demo: DemoItem): string {
     const tabs = `<div class="ud-tabs">
       <button class="ud-tab ${tab === 'preview' ? 'active' : ''}" data-demo="tab" data-tab="preview">预览</button>
       <button class="ud-tab ${tab === 'files' ? 'active' : ''}" data-demo="tab" data-tab="files">项目文件</button>
@@ -226,11 +251,48 @@ export function createDemoView(host: HTMLElement, deps: DemoDeps): DemoViewHandl
     </div>`
     let body = ''
     if (tab === 'preview') body = `<div class="ud-panel"><div class="ud-panel-body" style="padding:0">${renderPreview(demo)}</div></div>`
-    else if (tab === 'files') body = `<div class="ud-panel"><div class="ud-panel-head"><div><b>项目文件</b><span>只读浏览 · .dsh-workbench/demos/&lt;demoId&gt;/</span></div>
-      <button class="ud-btn tiny" data-demo="reload">刷新</button></div><div class="ud-panel-body">${renderFiles(demo)}</div></div>`
-    else body = `<div class="ud-panel"><div class="ud-panel-head"><div><b>版本</b><span>生成 / 按页优化 / 换主题都会产生版本</span></div></div>
-      <div class="ud-panel-body">${renderVersions(demo)}</div></div>`
-    root.innerHTML = `<div class="ud-view">${head}<div class="ud-demo-wrap">${list}<div>${tabs}${body}</div></div></div>`
+    else if (tab === 'files') body = `<div class="ud-panel"><div class="ud-panel-head"><div><b>项目文件</b><span>只读浏览 · .dsh-workbench/demos/&lt;demoId&gt;/</span></div><button class="ud-btn tiny" data-demo="reload">刷新</button></div><div class="ud-panel-body">${renderFiles(demo)}</div></div>`
+    else body = `<div class="ud-panel"><div class="ud-panel-head"><div><b>版本</b><span>生成 / 按页优化 / 换主题都会产生版本</span></div></div><div class="ud-panel-body">${renderVersions(demo)}</div></div>`
+    return `<div>${tabs}${body}</div>`
+  }
+
+  function render(): void {
+    if (root === null) return
+    if (loading && demos.length === 0 && packs.length === 0) {
+      root.innerHTML = `<div class="ud-view"><div class="ud-empty">正在加载 Demo 库…</div></div>`
+      return
+    }
+    const pack = activeKind === 'pack' ? currentPack() : undefined
+    const demo = activeKind === 'web' ? current() : undefined
+    const projectId = deps.getProjectId()
+    const filters = `<div class="ud-library-tools">
+      <button class="ud-filter ${filter === 'all' ? 'active' : ''}" data-demo="filter" data-filter="all">全部 · ${demos.length + packs.length}</button>
+      <button class="ud-filter ${filter === 'game' ? 'active' : ''}" data-demo="filter" data-filter="game">游戏 · ${packs.length}</button>
+      <button class="ud-filter ${filter === 'web' ? 'active' : ''}" data-demo="filter" data-filter="web">网页 · ${demos.length}</button>
+      <span class="spacer"></span><span class="ud-badge">${projectId === '' ? '内置 Demo' : esc(deps.getProjectName())}</span>
+      <button class="ud-btn primary" data-demo="generate" ${projectId === '' ? 'disabled title="选择项目后可创建网页 Demo"' : ''}>＋ 新建网页 Demo</button>
+    </div>`
+    const cards = [
+      ...visiblePacks().map(item => renderCard(item.title, item.summary, item.category, item.id, activeKind === 'pack' && item.id === activeId, item.thumbnailUrl, 'CW', 'pick-pack')),
+      ...visibleDemos().map(item => renderCard(item.title, `${item.themeId} · ${item.layoutMode === 'multi' ? '多文件' : '单文件'}${(item.archivedAt ?? '') !== '' ? ' · 已归档' : ''}`, item.kind === 'system' ? '产品系统' : '网页', item.id, activeKind === 'web' && item.id === activeId, item.thumbnailUrl ?? '', 'WEB', 'pick')),
+    ].join('')
+    const selectedHeader = pack
+      ? `<div class="ud-detail-head"><b>${esc(pack.title)}</b><span class="ud-badge">${esc(pack.version)}</span><span class="spacer"></span><button class="ud-btn tiny" data-demo="open-pack">↗ 试玩</button></div>`
+      : demo
+        ? `<div class="ud-detail-head"><b>${esc(demo.title)}</b><span class="ud-badge ${demo.layoutMode === 'multi' ? 'multi' : 'single'}">${demo.layoutMode === 'multi' ? '多文件' : '单文件'}</span><span class="spacer"></span>
+          <select class="ud-sel" data-demo="theme">${themeOptions(demo.themeId)}</select>
+          <button class="ud-btn tiny" data-demo="thumbnail-pick">${demo.thumbnailUrl ? '更换封面' : '上传封面'}</button>
+          <input id="wb-demo-thumbnail-file" type="file" accept="image/png,image/webp,image/jpeg" hidden>
+          <button class="ud-btn tiny" data-demo="archive">${(demo.archivedAt ?? '') === '' ? '⌸ 归档' : '↩ 恢复'}</button>
+          <button class="ud-btn tiny" data-demo="build">✦ 生成页面</button></div>`
+        : `<div class="ud-empty">${projectId === '' ? '选择一个项目后，这里会显示该项目的网页 Demo。' : '该分类暂时没有 Demo。'}</div>`
+    const selectedBody = pack ? renderPackDetail(pack) : demo ? renderWebDetail(demo) : ''
+    root.innerHTML = `<div class="ud-view">
+      <div class="ud-head"><div><div class="ud-eyebrow">DEMO LIBRARY</div><h2>Demo 库</h2><p class="sub">游戏模板与网页原型统一浏览；每项可登记预览、缩略图、节点、代码和验收信息。</p></div></div>
+      ${filters}
+      ${cards ? `<div class="ud-library-grid">${cards}</div>` : '<div class="ud-empty">还没有这个分类的 Demo。</div>'}
+      <div class="ud-panel">${selectedHeader}${selectedBody}</div>
+    </div>`
     bind()
   }
 
@@ -240,9 +302,21 @@ export function createDemoView(host: HTMLElement, deps: DemoDeps): DemoViewHandl
       el.onclick = () => {
         const act = el.getAttribute('data-demo') ?? ''
         const demo = current()
+        const pack = currentPack()
         if (act === 'tab') { tab = (el.getAttribute('data-tab') ?? 'preview') as typeof tab; render(); return }
         if (act === 'vp') { viewport = (el.getAttribute('data-v') ?? 'pc') as typeof viewport; render(); return }
-        if (act === 'pick') { activeId = el.getAttribute('data-id') ?? ''; pageId = ''; void reload(); return }
+        if (act === 'close-preview') { previewClosed = true; render(); return }
+        if (act === 'start-preview') { previewClosed = false; render(); return }
+        if (act === 'filter') {
+          filter = (el.getAttribute('data-filter') ?? 'all') as typeof filter
+          if (filter === 'game') { activeKind = 'pack'; activeId = packs[0]?.id ?? ''; previewClosed = true }
+          else if (filter === 'web') { activeKind = 'web'; activeId = demos[0]?.id ?? '' }
+          else if (activeKind === 'web' && demos.length === 0) { activeKind = 'pack'; activeId = packs[0]?.id ?? ''; previewClosed = true }
+          else if (activeKind === 'pack' && packs.length === 0) { activeKind = 'web'; activeId = demos[0]?.id ?? '' }
+          tab = 'preview'; render(); return
+        }
+        if (act === 'pick') { activeKind = 'web'; activeId = el.getAttribute('data-id') ?? ''; pageId = ''; tab = 'preview'; void reload(); return }
+        if (act === 'pick-pack') { activeKind = 'pack'; activeId = el.getAttribute('data-id') ?? ''; tab = 'preview'; previewClosed = true; render(); return }
         if (act === 'reload') { void reload(); return }
         if (act === 'archive') {
           if (demo) {
@@ -260,6 +334,7 @@ export function createDemoView(host: HTMLElement, deps: DemoDeps): DemoViewHandl
           return
         }
         if (act === 'generate') { openGenerateModal(); return }
+        if (act === 'thumbnail-pick') { $el<HTMLInputElement>('wb-demo-thumbnail-file')?.click(); return }
         if (act === 'build') {
           if (demo === undefined) { deps.toast('先创建一个 DEMO'); return }
           if (deps.onBuild === undefined) { deps.toast('生成通道未接入'); return }
@@ -268,9 +343,47 @@ export function createDemoView(host: HTMLElement, deps: DemoDeps): DemoViewHandl
         }
         if (act === 'optimize') { if (demo) openOptimizeModal(demo); return }
         if (act === 'open') { if (demo) window.open(`${deps.api}/demos/${encodeURIComponent(demo.id)}/view${pageId !== '' ? `?page=${encodeURIComponent(pageId)}` : ''}`, '_blank'); return }
+        if (act === 'open-pack') { if (pack) window.open(pack.playUrl ?? pack.previewUrl, '_blank', 'noopener'); return }
+        if (act === 'workflow-templates') { deps.openWorkflowTemplates?.(); return }
         if (act === 'rollback') { if (demo) void rollback(demo, el.getAttribute('data-version') ?? ''); return }
       }
     })
+    root.querySelectorAll<HTMLImageElement>('.ud-library-cover img').forEach(image => {
+      image.onerror = () => image.remove()
+    })
+    const thumbnailInput = $el<HTMLInputElement>('wb-demo-thumbnail-file')
+    if (thumbnailInput !== null) {
+      thumbnailInput.onchange = () => {
+        const file = thumbnailInput.files?.[0]
+        const demo = current()
+        if (!file || !demo) return
+        void (async () => {
+          try {
+            if (file.size > 12 * 1024 * 1024) throw new Error('原图不能超过 12 MB')
+            const bitmap = await createImageBitmap(file)
+            if (bitmap.width * bitmap.height > 16_000_000) { bitmap.close(); throw new Error('原图像素过多') }
+            const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 400
+            const scale = Math.max(canvas.width / bitmap.width, canvas.height / bitmap.height)
+            const width = bitmap.width * scale, height = bitmap.height * scale
+            const context = canvas.getContext('2d')
+            if (!context) { bitmap.close(); throw new Error('浏览器无法处理该图片') }
+            context.drawImage(bitmap, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height)
+            bitmap.close()
+            const dataUrl = canvas.toDataURL('image/webp', 0.82)
+            const saved = await api(`/demos/${encodeURIComponent(demo.id)}/thumbnail`, {
+              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dataUrl }),
+            })
+            const index = demos.findIndex(item => item.id === demo.id)
+            if (index >= 0) demos[index] = { ...demos[index], thumbnailUrl: String(saved.thumbnailUrl ?? '') }
+            thumbnailInput.value = ''
+            render()
+            deps.toast('Demo 缩略图已保存')
+          } catch (cause) {
+            deps.toast(`缩略图保存失败：${String((cause as Error).message ?? cause)}`)
+          }
+        })()
+      }
+    }
     const pageSel = root.querySelector<HTMLSelectElement>('[data-demo="page"]')
     if (pageSel !== null) {
       pageSel.onchange = () => { pageId = pageSel.value; render() }
@@ -360,6 +473,7 @@ export function createDemoView(host: HTMLElement, deps: DemoDeps): DemoViewHandl
                 body: JSON.stringify({ demo: { projectId: deps.getProjectId(), uiDesignId: designId, title, themeId, layoutMode, platform: 'all' } }),
               })
               deps.closeModal()
+              activeKind = 'web'
               activeId = data.demo?.id ?? ''
               await reload()
               deps.toast(`已创建（${layoutMode === 'multi' ? '多文件' : '单文件'}）；生成页面需 B1 接入`)

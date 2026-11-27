@@ -41,7 +41,8 @@ try {
   const catalog = await call('/workflow/catalog')
   assert(catalog.defs.some(node => node.id === 'config.combine'))
   assert.equal(catalog.defs.find(node => node.id === 'game.build').executor, 'tool-service')
-  assert(catalog.templates.some(template => template.id === 'game-starlight-test' && template.steps === 14))
+  assert(catalog.templates.some(template => template.id === 'game-cinderwatch-test' && template.steps === 14))
+  assert(!catalog.templates.some(template => template.id === 'game-starlight-test'), 'legacy template is hidden from recommendations')
   const starlight = (await call('/workflow/templates/game-starlight-test')).template.graph
   assert.equal(starlight.nodes.length, 14)
   assert.match(starlight.nodes.find(node => node.id === 'brief').config.text, /每局 15 秒/)

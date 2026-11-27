@@ -37,12 +37,12 @@ const GAME_TEMPLATE = buildTemplate('game', '游戏 v1 · 玩法规则与导出'
 ])
 
 const GAME_PRODUCT_TEMPLATE = buildTemplate('game', '游戏产品 · 从需求到可试玩交付', [
-  { id: 'brief', type: 'input.brief', x: 40, y: 200, config: { text: '描述目标玩家、核心体验、参考游戏、目标平台和本次交付范围。首版以一个可完整试玩的浏览器游戏为目标。' } },
-  { id: 'gdd', type: 'game.gdd', x: 300, y: 200, config: { platform: '网页', genre: '参考游戏与目标体验' } },
+  { id: 'brief', type: 'input.brief', x: 40, y: 200, config: { text: '基于 Cinderwatch 制作可离线试玩的 Three.js 塔防。保留四类塔及升级、敌人波次、金币经济、基地生命、自动指挥与手动接管。使用 seed=4、biome=ashen、startingGold=300、lives=20、autoCommand=true；规则 JSON 显式包含 nativeTemplate="cinderwatch@1" 和以上五个参数。交付单文件 HTML，并记录自动试玩与人工验收。' } },
+  { id: 'gdd', type: 'game.gdd', x: 300, y: 200, config: { platform: '网页', genre: 'Cinderwatch Three.js 塔防' } },
   { id: 'rules', type: 'game.rules', x: 560, y: 200 },
   { id: 'check', type: 'check.rules', x: 820, y: 200 },
   { id: 'design-review', type: 'human.review', title: '批准玩法范围', x: 1080, y: 200, config: { note: '核对目标、核心循环、控制方式、胜负条件和可观察验收行为。完成批准前不创建游戏工程。' } },
-  { id: 'create', type: 'game.create', x: 1340, y: 200 },
+  { id: 'create', type: 'game.create', x: 1340, y: 200, config: { template: 'cinderwatch', orientation: 'landscape' } },
   { id: 'prototype-playtest', type: 'game.playtest', title: '原型自动试玩', x: 1600, y: 200 },
   { id: 'revise', type: 'game.revise', x: 1860, y: 200 },
   { id: 'build', type: 'game.build', x: 2120, y: 200 },
@@ -104,6 +104,31 @@ const GAME_TEST_TEMPLATE: WorkflowGraph = {
     { from: { node: 'final-playtest', port: 'out' }, to: { node: 'final-context', port: 'b' } },
     { from: { node: 'final-context', port: 'out' }, to: { node: 'package', port: 'in' } },
   ],
+}
+
+const CINDERWATCH_TEST_CONFIG: Record<string, Record<string, ConfigValue>> = {
+  brief: { text: [
+    '以 Cinderwatch 为完整可玩基线，验证 Three.js 塔防与工作台游戏节点。保留上游 MIT 许可、作者与 Three.js 通知。',
+    '批准参数：nativeTemplate="cinderwatch@1"、seed=4、biome="ashen"、startingGold=300、lives=20、autoCommand=true。规则 JSON 显式保留这些字段，creativePack="none"。',
+    '玩法：四类塔、建造/升级/出售、道路敌人、波次与Boss、金币收益、基地生命、自动指挥/手动接管、暂停、速度与镜头控制。场景、模型、纹理与声音为程序化资源。',
+    '自动验收：真实浏览器绘制 WebGL 场景；鼠标建塔扣金；键盘接管/归还指挥与暂停；波次推进、击杀与经济增长；触屏输入和竖屏布局；零脚本错误和联网尝试，保存桌面/手机截图。无尽塔防不以 won 或通关为通过条件。',
+    '工作流：批准前不创建；每个节点调用同一游戏工具核心，记录真实项目与 buildId；构建、试玩和离线导出保持同版。Agent 可独立调用工具，无需 run 或工作流快照。',
+    '人工验收：实际打开导出 HTML，建塔、升级、缩放平移、指挥接管，观察至少两波敌人，补测失败与重开、听感和难度；填写真实设备、分钟数、导出路径与已知问题。自动报告不能替代人工通过。',
+  ].join('\n\n') },
+  gdd: { platform: '网页', genre: 'Three.js 3D 塔防', prompt: '围绕 Cinderwatch 完整塔防设计本次验证，保留四塔、升级、道路敌人、波次、金币、生命、自动指挥与玩家接管。使用需求中的批准参数，不替换成采集躲避，不承诺任意模型导入或付费生成。区分自动证据和人工玩法、失败/重开验收。' },
+  rules: { prompt: '根据 {{in}} 输出 JSON：version=1、title、player{count=1,controls[]}、goal[]、fail[]、loop[]、acceptance[]、openQuestions[]，另显式写 nativeTemplate="cinderwatch@1"、seed=4、biome="ashen"、startingGold=300、lives=20、autoCommand=true、creativePack="none"。塔防无尽波次不要求 won；基地生命归零失败，可重开。不得添加未实现机制或改成 collector。' },
+  'design-review': { note: '核对 cinderwatch@1、seed4、ashen、300金币、20生命和自动指挥=true；确认四塔、升级、波次、金币和接管。只有这些批准值创建到工程；不靠采集或空场景代替。' },
+  create: { template: 'cinderwatch', orientation: 'landscape' },
+  'prototype-playtest': { seconds: 20, maxRepairs: 0 },
+  revise: { prompt: '核对同一项目、当前源码与塔防专有自动证据。没有待修项则明确无需修改；Cinderwatch 禁止用 collector 标准源码恢复，不能削弱战斗或篡改规则通过。' },
+  'final-playtest': { seconds: 20, maxRepairs: 0 },
+  package: { prompt: '核对 Cinderwatch 专有试玩 checks 全通过、真实报告/截图 hash 与当前 buildId 一致后，精确导出该构建；不重新构建或联网发布。' },
+}
+
+const CINDERWATCH_TEST_TEMPLATE: WorkflowGraph = {
+  ...GAME_TEST_TEMPLATE,
+  name: '测试 · Cinderwatch 3D 塔防 · 游戏完整闭环',
+  nodes: GAME_TEST_TEMPLATE.nodes.map(node => ({ ...node, config: { ...(CINDERWATCH_TEST_CONFIG[node.id] ?? node.config) } })),
 }
 
 const CANVAS_DELIVERY_TEMPLATE = buildTemplate('game', '工作台 · 画布开发与集中验收', [
@@ -171,10 +196,11 @@ const DRAMA_TEMPLATE = buildTemplate('drama', '短剧 · 从一句话到交付�
 
 export interface TemplateInfo { id: string; name: string; line: ProductLineId; summary: string; steps: number }
 
-export const templates: { id: string; line: ProductLineId; summary: string; graph: WorkflowGraph }[] = [
+export const templates: { id: string; line: ProductLineId; summary: string; graph: WorkflowGraph; legacy?: boolean }[] = [
   { id: 'game-gdd-to-playtest', line: 'game', summary: '需求 → 设计稿 → 规则 JSON → 校验 → 人工确认 → 文件导出', graph: GAME_TEMPLATE },
   { id: 'game-product-closed-loop', line: 'game', summary: '需求 → 玩法批准 → 可玩原型 → 自动试玩修订 → 最终构建与试玩 → 离线 HTML → 人工验收', graph: GAME_PRODUCT_TEMPLATE },
-  { id: 'game-starlight-test', line: 'game', summary: '预填《星光采集》15 秒单关卡需求；20 秒自动试玩、两次人工关卡，同时记录游戏与画布问题', graph: GAME_TEST_TEMPLATE },
+  { id: 'game-cinderwatch-test', line: 'game', summary: '预填 Cinderwatch 3D 塔防；验证建塔、指挥接管、波次、金币、移动端及离线交付，保留人工验收', graph: CINDERWATCH_TEST_TEMPLATE },
+  { id: 'game-starlight-test', line: 'game', legacy: true, summary: '旧版《星光采集》兼容模板；保留已有模板 ID 与运行', graph: GAME_TEST_TEMPLATE },
   { id: 'workbench-canvas-delivery', line: 'game', summary: '画布任务拆解 → 人工实施记录 → 集中验收 → 证据回填 → 报告导出；不自动改代码或运行测试', graph: CANVAS_DELIVERY_TEMPLATE },
   { id: 'novel-bible-to-chapter', line: 'novel', summary: '需求 → 设定集 → 人物 + 大纲 → 章节 → 文风校验 → 导出', graph: NOVEL_TEMPLATE },
   { id: 'drama-story-to-deliver', line: 'drama', summary: '需求 → 故事核 → 分镜脚本 → 分镜表 + 配音 → 角色一致 → 交付包', graph: DRAMA_TEMPLATE },

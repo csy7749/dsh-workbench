@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "name": "Cinderwatch",
+  "repository": "https://github.com/kevintngo/cinderwatch",
+  "commit": "6640b81286df8b1fd2e5a745b48211c4a9323f83",
+  "importedOn": "2026-11-25",
+  "license": "MIT",
+  "threeRevision": "170",
+  "vendoredFilesUnmodified": true,
+  "adapter": "src/host/native-game-cinderwatch.mjs",
+  "modifications": [
+    "The vendored upstream source text is unchanged. Provenance hashes use UTF-8 with LF line endings so Git checkout conversion does not change verification. The adapter applies checked substitutions while assembling the game source.",
+    "The adapter binds seed, biome, startingGold, lives and autoCommand to frozen project rules.",
+    "The adapter adds read-only __gameState snapshots and normal commander/pause/restart controls, preserves upstream __cw hooks, and renders configured Unicode titles.",
+    "The HTML builder retains the original shell and r170 shader pipeline, adds an offline CSP and embeds both MIT notices. No external asset files are required at runtime."
+  ],
+  "files": {
+    "LICENSE": "2516144cbcef981347e979bd41642fa89f1b0a84b8af2811ca36ba4d2c797aea",
+    "src/00-util.js": "675063d8037ba3cb486e8b42f7378d9575fb0a6005201c1ab65156f6666bd1d7",
+    "src/10-gfx.js": "a67252c9db23ea6449482d54886036cc4ac63ce8c24eecbcf04a222caeb973ad",
+    "src/20-post.js": "08fe5707c5811969def3917dd98c720612c49ad96272d29108b079d7b5dc5bbe",
+    "src/29-biome.js": "09c218f8372b8d15ce307237b61435d7159789999efd519ac25535e2c440b799",
+    "src/30-layout.js": "728b793f91b4aee1d7c31569c6f51ef81dba35c4772a9fdd6d7aeb0e9c03fd61",
+    "src/31-terrain.js": "f5eb3058c51115ef79e622cc324847b8e32563f21a40a8210e2f09b2e4205b5b",
+    "src/32-props.js": "d8206b4488bf73f6763392d3799ca63dd345fb7c18c7627e9a934de1beb39209",
+    "src/33-flora.js": "e97bf2de371ed097957d821dcead6959ef9428ef93d4decca2e9e36ec9aefc02",
+    "src/40-fx.js": "5c92663be1092b1777e5a032e1a150f7d6048863805d39657e3111b6847bce56",
+    "src/41-weather.js": "efaceaf8eb968fae2b8af90ba7d799d0c3c7eac4009660f922b8b6fe578aacd9",
+    "src/50-rig.js": "1512104b300726f663c0b521ed7fe994f04f79d693a512a568055b037fb8356d",
+    "src/51-bestiary.js": "bbd78ddb1dcd0697268efe07a518d0450b86a6aac48114a5f1dac1b8366b8351",
+    "src/60-towers.js": "6dbe771dad037ae9118c4a0bd9a4f7ba935089633afabd3a880da308983c2148",
+    "src/61-monsters.js": "4956fbaf90daa62a51e39a97b713d1ea15463fbe59e1ff4a8556087a8305ae70",
+    "src/62-game.js": "381981ba8959468a6a5f72fb5952ad42f5520218848dd6dec659f581014ab6b0",
+    "src/70-pixelfont.js": "ee04e01d90ac9943fd53855d9afc8d1731dce9de1cdd291593a89d9f7091c228",
+    "src/72-ui.js": "fb6887f2011fb7115f6082da0d0bd96a3d98d76a921bfc6aca1036ea455f283f",
+    "src/80-audio.js": "f339cbc67cd1a37a9182ccf0e049859b691224621a09e046f7457889e0d2e272",
+    "src/90-main.js": "b29e51ae479cc5efa3078cfcb28bca410c892f5581653058a399e2e266984d48",
+    "src/shell.html": "454c756641589ff8ba602e3833e91d346c3b5c2ac0c6008927d894a25b61d3b5",
+    "vendor/LICENSE-three.txt": "9e12491babdd50b2527a321e60b2f2b89e41ff16ab9cd8cc543d2361bd55b497",
+    "vendor/three.module.min.js": "08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7"
+  },
+  "sha256Encoding": "utf8-lf"
+}

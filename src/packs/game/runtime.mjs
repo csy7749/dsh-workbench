@@ -35,7 +35,7 @@ export const gameHandoffReviewContract = {
     { key: 'tester', label: '试玩者' },
     { key: 'platform', label: '设备与浏览器' },
     { key: 'playDurationMinutes', label: '实际试玩分钟数（例如 1 或 0.5）' },
-    { key: 'observations', label: '从打开到完成一轮的实际过程与观察' },
+    { key: 'observations', label: '实际试玩过程与观察' },
     { key: 'knownIssues', label: '已知问题（无则填写“无”）' },
     { key: 'evidencePath', label: '导出 HTML 路径（保留预填的项目相对路径）' },
   ],

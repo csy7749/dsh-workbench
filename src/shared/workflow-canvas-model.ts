@@ -564,7 +564,7 @@ export function planToMarkdown(plan: Plan): string {
  * ------------------------------------------------------------------ */
 
 export interface TemplateInfo { id: string; name: string; line: ProductLineId; summary: string; steps: number; revision?: number }
-export const TEMPLATES: { id: string; line: ProductLineId; summary: string; graph: WorkflowGraph }[] = []
+export const TEMPLATES: { id: string; line: ProductLineId; summary: string; graph: WorkflowGraph; legacy?: boolean }[] = []
 
 export function templateOf(id: string): WorkflowGraph | null {
   const found = TEMPLATES.find(item => item.id === id)
@@ -572,7 +572,7 @@ export function templateOf(id: string): WorkflowGraph | null {
 }
 
 export function templateList(): TemplateInfo[] {
-  return TEMPLATES.map(item => ({ id: item.id, name: item.graph.name, line: item.line, summary: item.summary, steps: item.graph.nodes.length }))
+  return TEMPLATES.filter(item => !item.legacy).map(item => ({ id: item.id, name: item.graph.name, line: item.line, summary: item.summary, steps: item.graph.nodes.length }))
 }
 
 export function cloneGraph(graph: WorkflowGraph): WorkflowGraph {

@@ -1005,6 +1005,11 @@ h1.page-title{font-size:29px;line-height:1.18;margin:0;font-weight:700;letter-sp
 .head-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .side-home{padding:0 1px 7px;margin-bottom:8px;border-bottom:1px solid var(--line)}
 .portal-head{gap:18px}
+.feature-project-context{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
+.feature-project-context>div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.feature-project-context b{font-size:12px;font-weight:650}
+.feature-project-context span{font-size:10.5px;color:var(--text-3)}
+.feature-project-context .wb-project-select{min-width:190px;max-width:min(320px,45%)}
 .portal-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .portal-scope{font-size:11px;color:var(--text-3)}
 .portal-scope b{color:var(--text);font-weight:650}
@@ -1116,5 +1121,15 @@ h1.page-title{font-size:29px;line-height:1.18;margin:0;font-weight:700;letter-sp
 .portal-empty b{display:block;font-size:12px}
 .portal-empty span{display:block;font-size:10.5px;color:var(--text-3)}
 .portal-empty .btn{margin-left:auto}
+.portal-feature-disclosure{margin-top:12px;border:1px solid var(--line);border-radius:11px;background:var(--panel-2);overflow:hidden}
+.portal-feature-disclosure>summary{display:flex;align-items:center;gap:9px;min-height:42px;padding:0 13px;cursor:pointer;list-style:none}
+.portal-feature-disclosure>summary::-webkit-details-marker{display:none}
+.portal-feature-disclosure>summary::before{content:'›';color:var(--text-3);font-size:16px;transition:transform .12s}
+.portal-feature-disclosure[open]>summary::before{transform:rotate(90deg)}
+.portal-feature-disclosure>summary b{font-size:12px;font-weight:650}
+.portal-feature-disclosure>summary span{font-size:10.5px;color:var(--text-3)}
+.portal-feature-disclosure>summary:hover{background:var(--hover)}
+.portal-feature-disclosure>.portal-group:first-of-type{margin-top:0;border:0;border-top:1px solid var(--line);border-radius:0}
+.portal-feature-disclosure>.portal-group{margin:0 10px 10px}
 
 `

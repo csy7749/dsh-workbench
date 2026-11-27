@@ -86,10 +86,19 @@ export const WORKBENCH_TOOLS: ToolMeta[] = [
   { name: 'workbench_game_asset_list', group: '游戏工坊', capability: 'read', label: '读取游戏素材候选' },
   { name: 'workbench_game_asset_generate', group: '游戏工坊', capability: 'write.local', label: '生成本地原创素材' },
   { name: 'workbench_game_asset_adopt', group: '游戏工坊', capability: 'write.local', label: '采用游戏素材' },
+  { name: 'workbench_game_media_crop', group: '游戏工坊', capability: 'write.local', label: '裁切游戏图片' },
+  { name: 'workbench_game_media_grid_split', group: '游戏工坊', capability: 'write.local', label: '切分游戏精灵表' },
   { name: 'workbench_game_blender', group: '游戏工坊', capability: 'exec', label: 'Blender受限导出' },
   { name: 'workbench_game_revision_propose', group: '游戏工坊', capability: 'write.local', label: '提出游戏源码候选' },
   { name: 'workbench_game_revision_verify', group: '游戏工坊', capability: 'exec', label: '核验游戏源码候选' },
   { name: 'workbench_game_revision_recover', group: '游戏工坊', capability: 'write.local', label: '对账游戏修订' },
+  { name: 'workbench_image_list', group: '图片素材', capability: 'read', label: '读取产品图片候选' },
+  { name: 'workbench_image_generate', group: '图片素材', capability: 'network', label: '生成或编辑图片（可能消耗额度）' },
+  { name: 'workbench_image_import', group: '图片素材', capability: 'write.local', label: '导入产品图片' },
+  { name: 'workbench_image_select', group: '图片素材', capability: 'write.local', label: '选择产品图片素材' },
+  { name: 'workbench_image_metadata', group: '图片素材', capability: 'write.local', label: '编辑图片标签与备注' },
+  { name: 'workbench_image_check', group: '图片素材', capability: 'write.local', label: '记录图片技术检查' },
+  { name: 'workbench_image_export', group: '图片素材', capability: 'read', label: '下载产品图片原图' },
   { name: 'workbench_team_list', group: '只读', capability: 'read', label: '读团队配置' },
 ]
 
@@ -98,6 +107,7 @@ export const WORKBENCH_TOOLS: ToolMeta[] = [
  * 只需要覆盖「收窄时必须能挡住」的那批；其余归 other 默认放行。
  */
 const BUILTIN_RULES: Array<{ test: (name: string) => boolean, meta: Omit<ToolMeta, 'name'> }> = [
+  { test: name => ['generate_image', 'generate_images', 'edit_image', 'decompose_image_layers'].includes(name), meta: { group: '图片素材', capability: 'network', label: '图像模型调用（可能消耗额度）' } },
   { test: name => ['read', 'glob', 'grep', 'list', 'read_image'].includes(name), meta: { group: '文件', capability: 'read', label: '读文件' } },
   { test: name => ['write', 'edit'].includes(name), meta: { group: '文件', capability: 'write.local', label: '改文件' } },
   { test: name => ['bash', 'pwsh', 'ops_bash'].includes(name), meta: { group: '执行', capability: 'exec', label: '执行命令' } },
